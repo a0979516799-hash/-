@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-TW" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>紡絲助劑與鐵砂庫存智能管理系統 | BarmagSqlQC</title>
+  <meta name="description" content="紡絲油劑與組件鐵砂消耗量、再訂購點(ROP)計算、每日扣除模擬與採購請購簽核系統">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- CSS 樣式表 -->
+  <link rel="stylesheet" href="css/style.css?v=20261011_v4">
+</head>
+
+<body>
+
+  <!-- 頂部導航列 -->
+  <nav class="navbar">
+    <div style="display: flex; align-items: center; gap: 1.25rem; flex-shrink: 0;">
+      <div class="brand">
+        <div class="brand-icon">🏭</div>
+        <span>紡絲助劑與鐵砂庫存智能管理系統</span>
+      </div>
+
+      <!-- 核心模組切換頁籤按鈕 (油劑 / 鐵砂) -->
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <button class="nav-tab-btn active" id="tab-btn-oil" onclick="switchMainTab('oil')">
+          🛢️ 紡絲油劑監控
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-sand" onclick="switchMainTab('sand')">
+          🏔️ 鐵砂耗材監控
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <!-- 資料庫即時連線狀態標籤 -->
+      <div class="db-status-pill" id="db-status-pill" onclick="openDbStatusModal()" title="點擊檢視資料庫連線與健康狀態">
+        <span class="db-dot" id="db-dot"></span>
+        <span id="db-status-label">🗄️ 資料庫連線中...</span>
+      </div>
+
+      <!-- 油劑採購請購單按鈕 (在油劑分頁顯示) -->
+      <button class="btn btn-primary btn-sm" onclick="openPOModal()" id="po-modal-btn" title="查看並列印工廠原料採購請購單">
+        📄 油劑請購單 <span id="po-badge"
+          style="background: var(--bg-tag); color: var(--text-muted); padding: 0.1rem 0.45rem; border-radius: 9999px; font-size: 0.75rem; margin-left: 0.2rem;">0</span>
+      </button>
+
+      <!-- 鐵砂採購請購單按鈕 (在鐵砂分頁顯示) -->
+      <button class="btn btn-primary btn-sm" onclick="openSandPOModal()" id="sand-po-nav-btn"
+        style="display: none; background: var(--sand-gradient);" title="查看並列印工廠鐵砂採購請購單">
+        📄 鐵砂請購單 <span id="sand-po-badge"
+          style="background: var(--bg-tag); color: var(--text-muted); padding: 0.1rem 0.45rem; border-radius: 9999px; font-size: 0.75rem; margin-left: 0.2rem;">0</span>
+      </button>
+
+      <button class="btn btn-secondary btn-sm" id="export-csv-btn" onclick="handleExportCSV()" title="匯出表格為 CSV 檔案">
+        📥 匯出日報 (CSV)
+      </button>
+
+      <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="點擊切換白天／夜間模式" aria-label="切換主題">
+        <span id="theme-icon">🌙</span> <span id="theme-text">夜間模式</span>
+      </button>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ======================================================== -->
+    <!-- 模組一：紡絲油劑監控檢視區 (#oil-view)                   -->
+    <!-- ======================================================== -->
+    <div id="oil-view">
+      <!-- 頁面標題與開機稼動率控制列 -->
+      <header
+        style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+        <div>
+          <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.2rem;">
+            紡絲油劑庫存與再訂購點 (ROP) 監控系統
+          </h1>
+          <p style="color: var(--text-muted); font-size: 0.88rem;">
+            以 BarmagSqlQC 機台實測耗量為核心，支援每日生產扣除、水位預警折線圖、採購簽核與到貨入庫。
+          </p>
+        </div>
+
+        <!-- 全廠開機稼動率滑桿控制項 -->
+        <div class="capacity-slider-container">
+          <div style="font-size: 0.82rem;">
+            <div style="color: var(--text-muted); margin-bottom: 0.2rem;">全廠生產稼動率：<strong id="capacity-val"
+                style="color: var(--accent-cyan); font-size: 1rem;">100%</strong></div>
+            <input type="range" min="50" max="150" value="100" step="5" class="capacity-slider" id="capacity-slider"
+              oninput="changeCapacity(this.value)">
+          </div>
+        </div>
+      </header>
+
+      <!-- 3 大核心統計數據卡片 -->
+      <section class="stats-grid cols-3" style="margin-bottom: 1.75rem;">
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">🛢️ 原油單日總耗量 (d)</span>
+            <div class="stat-icon" style="background: rgba(6,182,212,0.15); color: var(--accent-cyan);">油</div>
+          </div>
+          <div class="stat-value" id="top-neat-oil" style="color: var(--accent-cyan);">424.4 <span
+              style="font-size: 1rem; font-weight: 500;">KG/天</span></div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">💧 油水單日總耗量</span>
+            <div class="stat-icon" style="background: rgba(59,130,246,0.15); color: var(--accent-blue);">水</div>
+          </div>
+          <div class="stat-value" id="top-emulsion-oil" style="color: var(--accent-blue);">3,644.2 <span
+              style="font-size: 1rem; font-weight: 500;">KG/天</span></div>
+          <div class="stat-desc">全廠循環乳化液日均耗量</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">🚨 達再訂購點 (ROP) 油種</span>
+            <div class="stat-icon" style="background: var(--danger-bg); color: var(--danger);">⚠</div>
+          </div>
+          <div class="stat-value" id="rop-alert-count" style="color: var(--danger);">0 種</div>
+          <div class="stat-desc" id="rop-alert-desc">需發出採購訂單</div>
+        </div>
+      </section>
+
+      <!-- 核心一：6 大油種 ROP 庫存監控與每日扣除控制列 -->
+      <section class="rop-monitor-section" id="oil-rop-section">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;">
+          <div>
+            <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.15rem;">
+              各油種庫存監控與 ROP 再訂購點
+            </h2>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              直接點選數值即可修改庫存、安全庫存 (SS) 與交期 (L)，系統即時判定是否觸發採購警戒。
+            </p>
+          </div>
+
+          <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;">
+            <button class="btn btn-primary btn-sm" onclick="simulateNextDay(1)">
+              ▶ 模擬生產 1 天
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="simulateNextDay(3)">
+              ⏩ 模擬連續 3 天
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="openRestockModal()"
+              style="border-color: var(--success); color: var(--success);" title="進貨入庫回補">
+              ➕ 廠商到貨入庫
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="resetInventoryStock()">
+              🔄 重設初始值
+            </button>
+          </div>
+        </div>
+
+        <!-- 6 大油種 ROP 參數設定卡片網格 -->
+        <div id="rop-cards-grid"
+          style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.25rem;">
+          <!-- 由 JavaScript 動態繪製 -->
+        </div>
+      </section>
+
+      <!-- 核心二：雙欄數據分析儀表板 (左: 14天水位預警折線圖 | 右: 各機台原油日耗排行) -->
+      <section class="analytics-grid">
+        <!-- 左欄：未來 14 天水位消耗折線圖 -->
+        <div
+          style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem;">
+          <div
+            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+            <h3 style="font-size: 1.1rem; font-weight: 700;">📈 未來 14 天水位消耗趨勢預警圖</h3>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <select class="input-field" id="trend-oil-select" onchange="renderTrendChart()"
+                style="min-width: 140px; padding: 0.25rem 0.5rem; font-size: 0.82rem;">
+                <option value="all">全廠原油 (綜合)</option>
+                <option value="B-1823">B-1823</option>
+                <option value="P-1213">P-1213</option>
+                <option value="T-1206" selected>T-1206</option>
+                <option value="T-2227">T-2227</option>
+                <option value="T2227+YT5355">T2227+YT5355</option>
+                <option value="XF-5010+T-2124">XF-5010+T-2124</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="trend-chart-container" style="height: 280px;">
+            <canvas id="trendCanvas"></canvas>
+          </div>
+
+          <div id="trend-insight-text"
+            style="margin-top: 0.75rem; font-size: 0.82rem; color: var(--text-muted); background: var(--bg-inset); border: 1px solid var(--border-color); padding: 0.5rem 0.85rem; border-radius: var(--radius-sm); border-left: 3px solid var(--accent-cyan);">
+            <!-- JavaScript 動態輸出分析文字 -->
+          </div>
+        </div>
+
+        <!-- 右欄：各機台單日原油耗量排行 -->
+        <div
+          style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem;">
+          <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.3rem;">📊 各機台單日原油耗量排行 (KG/天)</h3>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1.25rem;">各產線機台每日實際原油消耗速率分析</p>
+          <div id="machine-bars-container" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
+        </div>
+      </section>
+
+      <!-- 14 筆真實機台耗量明細表格 -->
+      <div
+        style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+        <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+          <div>
+            <label
+              style="font-size: 0.85rem; color: var(--text-dim); display: block; margin-bottom: 0.25rem;">依油種篩選：</label>
+            <select class="input-field" id="filter-oil" onchange="applyFilters()" style="min-width: 160px;">
+              <option value="all">全部油種 (6種)</option>
+              <option value="B-1823">B-1823</option>
+              <option value="P-1213">P-1213</option>
+              <option value="T-1206">T-1206</option>
+              <option value="T-2227">T-2227</option>
+              <option value="T2227+YT5355">T2227+YT5355</option>
+              <option value="XF-5010+T-2124">XF-5010+T-2124</option>
+            </select>
+          </div>
+
+          <div>
+            <label
+              style="font-size: 0.85rem; color: var(--text-dim); display: block; margin-bottom: 0.25rem;">依機台篩選：</label>
+            <select class="input-field" id="filter-machine" onchange="applyFilters()" style="min-width: 140px;">
+              <option value="all">全部機台 (8台)</option>
+              <option value="001">機台 001</option>
+              <option value="002">機台 002</option>
+              <option value="003">機台 003</option>
+              <option value="004">機台 004</option>
+              <option value="011">機台 011</option>
+              <option value="012">機台 012</option>
+              <option value="013">機台 013</option>
+              <option value="014">機台 014</option>
+            </select>
+          </div>
+        </div>
+
+        <span id="filtered-count" style="font-size: 0.88rem; color: var(--text-muted);">顯示中：14 筆資料</span>
+      </div>
+
+      <!-- 核心資料表格 -->
+      <div class="data-table-container" style="box-shadow: var(--shadow-md); margin-bottom: 4rem;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">#</th>
+              <th>油種</th>
+              <th>機台</th>
+              <th>開始日期</th>
+              <th>結束日期</th>
+              <th style="text-align: center;">統計天數</th>
+              <th style="text-align: right; color: var(--accent-cyan);">⭐ 每日原油耗量 (KG/天)</th>
+              <th style="text-align: right;">該油種_原油總耗量 (KG)</th>
+              <th style="text-align: right;">該油種_油水總耗量 (KG)</th>
+              <th style="text-align: center;">乳化配比濃度 (%)</th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- 模組二：鐵砂耗材監控檢視區 (#sand-view)                   -->
+    <!-- ======================================================== -->
+    <div id="sand-view" style="display: none;">
+      <!-- 鐵砂頁面標題 -->
+      <header
+        style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+        <div>
+          <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.2rem;">
+            紡絲組件鐵砂耗材與再訂購點 (ROP) 監控
+          </h1>
+          <p style="color: var(--text-muted); font-size: 0.88rem;">
+            依據組件更換即時扣除，鐵砂比重標準 <strong style="color: var(--accent-amber);">2.2 g/c.c.</strong>，支援 <strong>25/50
+              粗砂</strong> 與 <strong>140/200 細砂</strong> 雙規格監控及型號配方庫自訂。
+          </p>
+        </div>
+
+        <div style="display: flex; gap: 0.6rem; align-items: center;">
+          <button class="btn btn-sm" onclick="openAddRecipeModal()"
+            style="background: rgba(245,158,11,0.15); border: 1px solid var(--accent-amber); color: var(--accent-amber); font-weight: 600;">
+            ⚙️ 新增 PACK 型號配方比
+          </button>
+        </div>
+      </header>
+
+      <!-- 4 大鐵砂核心統計卡片 -->
+      <section class="stats-grid" style="margin-bottom: 1.75rem;">
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">🪨 粗砂 (25/50) 單日總耗量</span>
+            <div class="stat-icon" style="background: rgba(245,158,11,0.15); color: var(--accent-amber);">粗</div>
+          </div>
+          <div class="stat-value" id="sand-top-coarse-kg" style="color: var(--accent-amber);">41.6 <span
+              style="font-size: 1rem; font-weight: 500;">KG/天</span></div>
+          <div class="stat-desc" id="sand-top-coarse-bags">約 1.7 袋/天 (25KG/袋)</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">✨ 細砂 (140/200) 單日總耗量</span>
+            <div class="stat-icon" style="background: rgba(6,182,212,0.15); color: var(--accent-cyan);">細</div>
+          </div>
+          <div class="stat-value" id="sand-top-fine-kg" style="color: var(--accent-cyan);">14.5 <span
+              style="font-size: 1rem; font-weight: 500;">KG/天</span></div>
+          <div class="stat-desc" id="sand-top-fine-bags">約 0.6 袋/天 (25KG/袋)</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">🔩 每日更換 PACK 總數</span>
+            <div class="stat-icon" style="background: rgba(59,130,246,0.15); color: var(--accent-blue);">組</div>
+          </div>
+          <div class="stat-value" id="sand-top-total-packs" style="color: var(--accent-blue);">365 <span
+              style="font-size: 1rem; font-weight: 500;">顆/天</span></div>
+          <div class="stat-desc" id="sand-top-total-weight">全廠雙砂日耗: 56.1 KG</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span class="stat-title">🚨 鐵砂 ROP 警戒狀態</span>
+            <div class="stat-icon" id="sand-alert-icon" style="background: var(--success-bg); color: var(--success);">✓
+            </div>
+          </div>
+          <div class="stat-value" id="sand-top-alert-count" style="color: var(--success);">0 種</div>
+          <div class="stat-desc" id="sand-top-alert-desc">粗細砂庫存充足</div>
+        </div>
+      </section>
+
+      <!-- 鐵砂 ROP 庫存監控卡片區塊 -->
+      <section class="rop-monitor-section" id="sand-rop-section">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;">
+          <div>
+            <h2 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.15rem;">
+              粗砂 (25/50) 與 細砂 (140/200) 庫存監控與 ROP 再訂購點
+            </h2>
+            <p style="font-size: 0.82rem; color: var(--text-muted);">
+              直接點選數值即可修改庫存、安全庫存 (SS) 與交期 (L)，包裝單位標準為 25 KG/袋。
+            </p>
+          </div>
+
+          <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+            <button class="btn btn-primary btn-sm" onclick="simulateSandDay(1)"
+              style="background: var(--sand-gradient);">
+              ▶ 模擬生產 1 天
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="simulateSandDay(3)">
+              ⏩ 模擬連續 3 天
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="openSandRestockModal()"
+              style="border-color: var(--accent-amber); color: var(--accent-amber);" title="進貨入庫回補">
+              ➕ 鐵砂到貨入庫
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="resetSandInventory()">
+              🔄 重設初始值
+            </button>
+          </div>
+        </div>
+
+        <!-- 粗砂與細砂雙卡片 -->
+        <div id="sand-rop-cards-grid"
+          style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.5rem;">
+          <!-- 由 JavaScript 動態繪製 -->
+        </div>
+      </section>
+
+      <!-- 鐵砂雙欄數據分析儀表板 (左: 14天鐵砂水位預警折線圖 | 右: PACK 型號配方庫與更換量) -->
+      <section class="analytics-grid" style="grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 1.5rem; margin-bottom: 4rem;">
+        <!-- 左欄：未來 14 天鐵砂水位折線圖 -->
+        <div
+          style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem; min-width: 0;">
+          <div
+            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+            <h3 style="font-size: 1.1rem; font-weight: 700;">📈 未來 14 天鐵砂水位消耗趨勢預警圖</h3>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <select class="input-field" id="sand-trend-select" onchange="renderSandTrendChart()"
+                style="min-width: 150px; padding: 0.25rem 0.5rem; font-size: 0.82rem;">
+                <option value="both" selected>粗砂 + 細砂 (雙規格)</option>
+                <option value="coarse">粗砂 (25/50)</option>
+                <option value="fine">細砂 (140/200)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="trend-chart-container" style="height: 280px; width: 100%; position: relative; overflow: hidden;">
+            <canvas id="sandTrendCanvas" style="width: 100%; height: 100%; display: block;"></canvas>
+          </div>
+
+          <div id="sand-trend-insight-text"
+            style="margin-top: 0.75rem; font-size: 0.82rem; color: var(--text-muted); background: var(--bg-inset); border: 1px solid var(--border-color); padding: 0.5rem 0.85rem; border-radius: var(--radius-sm); border-left: 3px solid var(--accent-amber);">
+            <!-- JavaScript 動態輸出分析文字 -->
+          </div>
+        </div>
+
+        <!-- 右欄：PACK 組件型號配方庫 (關鍵：主管隨意自訂容積 c.c. 與更換顆數) -->
+        <div
+          style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem; display: flex; flex-direction: column; min-width: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+            <h3 style="font-size: 1.1rem; font-weight: 700;">⚙️ PACK 組件型號配方庫</h3>
+            <div style="display: flex; gap: 0.4rem;">
+              <button class="btn btn-primary btn-sm" onclick="openAddRecipeModal()"
+                style="padding: 0.25rem 0.65rem; font-size: 0.78rem; background: var(--sand-gradient);"
+                title="開啟專屬表單輸入主管自訂配方">
+                ➕ 自訂輸入配方
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="addNewPackRecipe()"
+                style="padding: 0.25rem 0.5rem; font-size: 0.78rem;" title="直接在表格新增空白列">
+                ＋ 快速加列
+              </button>
+            </div>
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.85rem;">
+            鐵砂比重固定為 <strong style="color: var(--accent-amber);">2.2 g/c.c.</strong>，主管可直接在表格修改數值，或點擊「自訂輸入配方」開啟表單。
+          </p>
+
+          <!-- ChangePack 資料庫連動專區 (依主管指示：用 PACK 型號到公司更換資料庫確認更換數量) -->
+          <div style="background: var(--bg-inset); border: 1px solid rgba(245,158,11,0.25); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+              <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--accent-amber); display: flex; align-items: center; gap: 0.25rem;">
+                  📂 ChangePack 更換資料庫:
+                </span>
+                <select id="changepack-date-select" class="input-field" style="padding: 0.2rem 0.5rem; font-size: 0.78rem; min-width: 170px; height: 30px;">
+                  <option value="">載入日期中...</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="loadSelectedChangePackDate()" style="padding: 0.2rem 0.6rem; font-size: 0.78rem; background: var(--sand-gradient); height: 30px;" title="讀取此日期各型號真實更換顆數">
+                  📥 帶入更換量
+                </button>
+              </div>
+              <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                <button class="btn btn-secondary btn-sm" id="import-sand-csv-btn" onclick="triggerImportSandCsv()" style="padding: 0.2rem 0.65rem; font-size: 0.78rem; border-color: var(--accent-amber); color: var(--accent-amber); height: 30px;" title="將 21MB 鐵砂 CSV 批次灌入資料庫">
+                  ⚡ 匯入 CSV 至資料庫
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="deductLoadedPackStock()" style="padding: 0.2rem 0.65rem; font-size: 0.78rem; height: 30px;" title="依當日實際更換量扣除粗砂與細砂庫存">
+                  ▶ 扣除當日庫存
+                </button>
+              </div>
+            </div>
+            <div id="changepack-status-bar" style="margin-top: 0.45rem; font-size: 0.75rem; color: var(--text-dim); display: flex; justify-content: space-between; align-items: center; background: var(--bg-inset); border: 1px solid var(--border-color); padding: 0.3rem 0.6rem; border-radius: 4px;">
+              <span id="changepack-summary-text">💡 請選擇工作日期並點擊「帶入更換量」，系統將自動自 ChangePack.csv 統計換裝顆數。</span>
+              <span id="changepack-source-tag" style="background: rgba(245,158,11,0.2); color: var(--accent-amber); padding: 0.05rem 0.35rem; border-radius: 3px; font-size: 0.7rem;">ChangePack.csv</span>
+            </div>
+          </div>
+
+          <div style="overflow-x: auto; flex: 1; max-height: 320px;">
+            <table class="recipe-table">
+              <thead>
+                <tr>
+                  <th>PACK 型號</th>
+                  <th style="text-align: right;">日換顆數</th>
+                  <th style="text-align: right;">粗砂 (c.c.)</th>
+                  <th style="text-align: right;">粗砂 (g)</th>
+                  <th style="text-align: right;">細砂 (c.c.)</th>
+                  <th style="text-align: right;">細砂 (g)</th>
+                  <th style="text-align: center;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="sand-recipe-tbody">
+                <!-- JavaScript 動態輸出配方列表 -->
+              </tbody>
+            </table>
+          </div>
+
+          <div
+            style="margin-top: 0.75rem; font-size: 0.78rem; color: var(--text-dim); display: flex; justify-content: space-between;">
+            <span>💡 提示：點擊任一數值即可直接在表格內編輯。</span>
+            <button class="btn btn-secondary btn-sm" onclick="resetPackRecipes()"
+              style="padding: 0.15rem 0.5rem; font-size: 0.75rem;">重設配方</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+  </main>
+
+  <!-- 彈窗一：紡絲原油進貨入庫模態視窗 -->
+  <div id="restock-modal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <div class="modal-title">📦 紡絲原油進貨入庫回補</div>
+        <button class="modal-close" onclick="closeRestockModal()">&times;</button>
+      </div>
+      <div style="margin-bottom: 1.25rem;">
+        <label
+          style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">選擇進貨回補油種：</label>
+        <select class="input-field" id="restock-oil-select" style="width:100%; margin-bottom:1rem;"></select>
+
+        <label style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">入庫數量 (公斤
+          KG)：</label>
+        <div style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+          <input type="number" id="restock-amount" class="input-field" value="1000" step="50"
+            style="font-size:1.2rem; font-weight:700; flex:1;">
+          <span style="display:flex; align-items:center; font-weight:700;">KG</span>
+        </div>
+
+        <div style="font-size:0.82rem; color:var(--text-dim); margin-bottom:1rem;">
+          快捷數量：
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setRestockQty(200)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+200 KG (1桶)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setRestockQty(600)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+600 KG (3桶)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setRestockQty(1000)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+1,000 KG (5桶)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setRestockQty(2000)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+2,000 KG (10桶)</button>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:0.75rem;">
+        <button class="btn btn-secondary" onclick="closeRestockModal()">取消</button>
+        <button class="btn btn-primary" onclick="confirmRestock()">✅ 確認入庫回補</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 彈窗二：紡絲原油採購請購簽核單模態視窗 -->
+  <div id="po-modal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 900px;">
+      <div class="modal-header no-print">
+        <div class="modal-title">📑 紡絲原料採購請購簽核單 (ERP / 供應鏈專用)</div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="window.print()">🖨️ 列印 / 匯出 PDF</button>
+          <button class="modal-close" onclick="closePOModal()">&times;</button>
+        </div>
+      </div>
+
+      <!-- 正式工廠 PO Sheet 內容 (白底黑字正規工業單據格式) -->
+      <div class="po-sheet">
+        <div class="po-header">
+          <div>
+            <h2 style="font-size: 1.45rem; font-weight: 800; color: #0f172a; margin-bottom: 0.2rem;">紡絲工程部 原料採購請購單</h2>
+            <div style="font-size: 0.85rem; color: #64748b;">紡絲油劑庫存監控系統自動開立</div>
+          </div>
+          <div style="text-align: right; font-size: 0.85rem; color: #475569;">
+            <div>請購單號：<strong id="po-no" style="font-family: monospace; color: #0f172a;">PO-20260914-001</strong></div>
+            <div>開單日期：<span id="po-date">2026-09-14</span></div>
+            <div>狀態：<span style="color: #dc2626; font-weight: 700;">待主管簽核 (達再訂購點)</span></div>
+          </div>
+        </div>
+
+        <p style="font-size: 0.85rem; color: #475569; margin-bottom: 1rem;">
+          說明：下列紡絲油劑庫存量已達或低於再訂購點 (ROP)，為確保機台連續生產不致斷料停機，建請立即核准向指定油品供應商發出採購訂單。
+        </p>
+
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="text-align:center;">項次</th>
+              <th>油品代號</th>
+              <th>目前存量</th>
+              <th>再訂購點 (ROP)</th>
+              <th>安全庫存 (SS)</th>
+              <th style="text-align:center;">交期</th>
+              <th style="text-align:right;">建議請購量</th>
+              <th style="text-align:center;">建議規格</th>
+            </tr>
+          </thead>
+          <tbody id="po-table-body"></tbody>
+        </table>
+
+        <div style="font-size: 0.82rem; color: #64748b; line-height: 1.5; margin-bottom: 1.5rem;">
+          備註：建議請購量依補足至健康庫存水位計算，採整桶倍數（每標準桶 200 KG 原油）發單，依 Lead Time 天數送達紡絲現場。
+        </div>
+
+        <!-- 簽核欄位 -->
+        <div class="po-sign-grid">
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">製單人：</span>
+            <span style="font-weight: 600; color: #0f172a;">系統自動產製</span>
+          </div>
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">採購課 / 覆核：</span>
+            <span style="color: #94a3b8;">（簽名 / 日期）</span>
+          </div>
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">廠長 / 主管核准：</span>
+            <span style="color: #94a3b8;">（簽名 / 日期）</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer no-print"
+        style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn btn-secondary" onclick="closePOModal()">關閉</button>
+        <button class="btn btn-primary" onclick="window.print()">🖨️ 列印此請購單 (可另存 PDF)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 彈窗三：鐵砂到貨入庫模態視窗 -->
+  <div id="sand-restock-modal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <div class="modal-title">📦 鐵砂耗材到貨入庫回補</div>
+        <button class="modal-close" onclick="closeSandRestockModal()">&times;</button>
+      </div>
+      <div style="margin-bottom: 1.25rem;">
+        <label
+          style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">選擇入庫鐵砂規格：</label>
+        <select class="input-field" id="sand-restock-type-select" style="width:100%; margin-bottom:1rem;">
+          <option value="coarse">粗砂 (規格目數 25/50)</option>
+          <option value="fine">細砂 (規格目數 140/200)</option>
+        </select>
+
+        <label style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">入庫數量 (標準袋 25
+          KG/袋)：</label>
+        <div style="display:flex; gap:0.5rem; margin-bottom:0.5rem;">
+          <input type="number" id="sand-restock-bags" class="input-field" value="20" min="1" step="1"
+            oninput="updateSandRestockKgDisplay()" style="font-size:1.2rem; font-weight:700; flex:1;">
+          <span style="display:flex; align-items:center; font-weight:700;">袋</span>
+        </div>
+        <div style="font-size:0.85rem; color:var(--accent-amber); margin-bottom:1rem;" id="sand-restock-kg-hint">
+          相當於 500 KG (0.50 公噸)
+        </div>
+
+        <div style="font-size:0.82rem; color:var(--text-dim); margin-bottom:1rem;">
+          快捷數量：
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setSandRestockBags(10)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+10 袋 (250 KG)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setSandRestockBags(20)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+20 袋 (500 KG)</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setSandRestockBags(40)"
+            style="padding:0.2rem 0.5rem; font-size:0.75rem;">+40 袋 (1,000 KG)</button>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:0.75rem;">
+        <button class="btn btn-secondary" onclick="closeSandRestockModal()">取消</button>
+        <button class="btn btn-primary" onclick="confirmSandRestock()" style="background: var(--sand-gradient);">✅
+          確認入庫回補</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 彈窗四：鐵砂採購請購簽核單模態視窗 -->
+  <div id="sand-po-modal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 900px;">
+      <div class="modal-header no-print">
+        <div class="modal-title">📑 紡絲組件鐵砂原物料採購請購簽核單</div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary btn-sm" onclick="window.print()">🖨️ 列印 / 匯出 PDF</button>
+          <button class="modal-close" onclick="closeSandPOModal()">&times;</button>
+        </div>
+      </div>
+
+      <!-- 白底黑字正規工業單據格式 -->
+      <div class="po-sheet">
+        <div class="po-header">
+          <div>
+            <h2 style="font-size: 1.45rem; font-weight: 800; color: #0f172a; margin-bottom: 0.2rem;">紡絲工程部 鐵砂耗材原料採購請購單
+            </h2>
+            <div style="font-size: 0.85rem; color: #64748b;">紡絲組件鐵砂耗材管理系統自動開立</div>
+          </div>
+          <div style="text-align: right; font-size: 0.85rem; color: #475569;">
+            <div>請購單號：<strong id="sand-po-no"
+                style="font-family: monospace; color: #0f172a;">PO-SAND-20260914-001</strong></div>
+            <div>開單日期：<span id="sand-po-date">2026-09-14</span></div>
+            <div>狀態：<span id="sand-po-status" style="color: #dc2626; font-weight: 700;">待主管簽核 (達再訂購點)</span></div>
+          </div>
+        </div>
+
+        <p style="font-size: 0.85rem; color: #475569; margin-bottom: 1rem;">
+          說明：下列紡絲組件過濾鐵砂庫存量已達或低於再訂購點 (ROP)，為確保機台更換組件連續作業不致斷料，建請立即核准向指定鐵砂供應商發出採購訂單。
+        </p>
+
+        <table class="po-table">
+          <thead>
+            <tr>
+              <th style="text-align:center;">項次</th>
+              <th>鐵砂規格與目數</th>
+              <th>目前存量</th>
+              <th>再訂購點 (ROP)</th>
+              <th>安全庫存 (SS)</th>
+              <th style="text-align:center;">交期 (L)</th>
+              <th style="text-align:right;">建議請購量 (KG)</th>
+              <th style="text-align:center;">包裝規格</th>
+            </tr>
+          </thead>
+          <tbody id="sand-po-table-body"></tbody>
+        </table>
+
+        <div style="font-size: 0.82rem; color: #64748b; line-height: 1.5; margin-bottom: 1.5rem;">
+          備註：建議請購量依補足至安全週轉水位計算，以標準整袋（每袋 25 KG / 0.025 Ton）發單，依 Lead Time 天數送達工廠組件洗滌與裝填現場。
+        </div>
+
+        <!-- 簽核欄位 -->
+        <div class="po-sign-grid">
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">製單人：</span>
+            <span style="font-weight: 600; color: #0f172a;">系統自動產製</span>
+          </div>
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">組件課 / 覆核：</span>
+            <span style="color: #94a3b8;">（簽名 / 日期）</span>
+          </div>
+          <div class="po-sign-box">
+            <span style="font-size: 0.8rem; color: #64748b;">廠長 / 主管核准：</span>
+            <span style="color: #94a3b8;">（簽名 / 日期）</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer no-print"
+        style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn btn-secondary" onclick="closeSandPOModal()">關閉</button>
+        <button class="btn btn-primary" onclick="window.print()">🖨️ 列印此請購單 (可另存 PDF)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 彈窗五：主管自訂 PACK 組件鐵砂配方模態視窗 -->
+  <div id="custom-recipe-modal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <div class="modal-title" id="custom-recipe-modal-title">⚙️ 主管自訂 PACK 組件配方輸入</div>
+        <button class="modal-close" onclick="closeAddRecipeModal()">&times;</button>
+      </div>
+
+      <div style="margin-bottom: 1.25rem;">
+        <input type="hidden" id="recipe-modal-edit-id" value="">
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+          請輸入組件型號規格與填裝容積，系統將固定以比重 <strong style="color: var(--accent-amber);">2.2 g/c.c.</strong> 即時換算單顆重量與單日消耗。
+        </p>
+
+        <div style="margin-bottom: 0.85rem;">
+          <label style="display: block; font-size: 0.82rem; color: var(--text-dim); margin-bottom: 0.3rem;">PACK
+            組件型號代碼：</label>
+          <input type="text" id="recipe-modal-type" class="input-field" placeholder="例如：A29-18D、T280-2、自訂款-01"
+            style="width: 100%; font-weight: 700;">
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.85rem;">
+          <div>
+            <label style="display: block; font-size: 0.82rem; color: var(--accent-amber); margin-bottom: 0.3rem;">粗砂容積
+              (c.c.)【25/50】：</label>
+            <div style="display: flex; gap: 0.3rem; align-items: center;">
+              <input type="number" id="recipe-modal-coarse-cc" class="input-field" min="0" step="1" value="52"
+                oninput="updateRecipeModalPreview()" style="font-weight: 700; width: 100%;">
+              <span style="font-size: 0.85rem; font-weight: 600;">c.c.</span>
+            </div>
+          </div>
+
+          <div>
+            <label style="display: block; font-size: 0.82rem; color: var(--accent-cyan); margin-bottom: 0.3rem;">細砂容積
+              (c.c.)【140/200】：</label>
+            <div style="display: flex; gap: 0.3rem; align-items: center;">
+              <input type="number" id="recipe-modal-fine-cc" class="input-field" min="0" step="1" value="18"
+                oninput="updateRecipeModalPreview()" style="font-weight: 700; width: 100%;">
+              <span style="font-size: 0.85rem; font-weight: 600;">c.c.</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+          <label
+            style="display: block; font-size: 0.82rem; color: var(--accent-blue); margin-bottom: 0.3rem;">預估單日更換組件顆數
+            (顆/天)：</label>
+          <div style="display: flex; gap: 0.3rem; align-items: center;">
+            <input type="number" id="recipe-modal-daily-packs" class="input-field" min="1" step="1" value="50"
+              oninput="updateRecipeModalPreview()" style="font-weight: 700; width: 100%;">
+            <span style="font-size: 0.85rem; font-weight: 600;">顆/天</span>
+          </div>
+        </div>
+
+        <!-- 實時物理換算結果預覽卡片 -->
+        <div
+          style="background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.85rem;">
+          <div style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 0.4rem;">🔬 物理重量與單日消耗即時試算（比重 ×2.2）：
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.82rem;">
+            <div>單顆粗砂重量：<strong id="modal-coarse-g-preview" style="color: var(--accent-amber);">114.4 g</strong></div>
+            <div>單顆細砂重量：<strong id="modal-fine-g-preview" style="color: var(--accent-cyan);">39.6 g</strong></div>
+            <div>單顆總砂重量：<strong id="modal-total-g-preview" style="color: var(--text-main);">154.0 g</strong></div>
+            <div>單日雙砂耗量：<strong id="modal-daily-kg-preview" style="color: var(--success);">7.70 KG/天</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn btn-secondary" onclick="closeAddRecipeModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveCustomRecipeFromModal()" style="background: var(--sand-gradient);">
+          💾 儲存此配方至庫存系統
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 資料庫連線狀態與健康診斷視窗 -->
+  <div id="db-status-modal" class="modal-backdrop" onclick="closeDbStatusModal(event)">
+    <div class="modal-content" style="max-width: 540px;" onclick="event.stopPropagation()">
+      <div class="modal-header" style="border-bottom: 1px solid var(--border-color); padding-bottom: 0.75rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+          🗄️ 資料庫雙模連線與健康狀態
+        </h3>
+        <button class="modal-close" onclick="closeDbStatusModal()" style="background:none; border:none; color:var(--text-muted); font-size:1.4rem; cursor:pointer;">&times;</button>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 1rem; font-size: 0.88rem;">
+        <div style="background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 1rem;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="color: var(--text-muted);">核心資料庫引擎：</span>
+            <strong id="modal-db-engine" style="color: var(--accent-cyan);">檢測中...</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="color: var(--text-muted);">伺服器位址 / 實例：</span>
+            <span id="modal-db-server" style="font-family: monospace;">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="color: var(--text-muted);">資料庫名稱：</span>
+            <span id="modal-db-name" style="font-family: monospace;">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: var(--text-muted);">連線延遲 (Ping)：</span>
+            <span id="modal-db-latency" style="color: var(--success); font-weight: 600;">- ms</span>
+          </div>
+        </div>
+
+        <div style="background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 1rem;">
+          <h4 style="font-size: 0.92rem; font-weight: 700; margin-bottom: 0.6rem; color: var(--accent-amber);">
+            📊 兩大核心模組數據源與筆數
+          </h4>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span>🛢️ 紡絲助劑 (主管 MS SQL)：</span>
+            <span id="modal-oil-count" style="font-weight: 700; color: var(--accent-cyan);">14 筆機台耗量</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>🏔️ 鐵砂耗材更換紀錄：</span>
+            <span id="modal-sand-count" style="font-weight: 700; color: var(--accent-amber);">檢測中...</span>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;">
+          <button class="btn btn-secondary btn-sm" onclick="checkDatabaseStatus(true)">🔄 重新整理連線狀態</button>
+          <button class="btn btn-primary btn-sm" onclick="triggerImportSandCsv()" style="background: var(--sand-gradient);">⚡ 匯入鐵砂 CSV 至資料庫</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 浮窗訊息 Toast -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- 頁尾 -->
+  <footer>
+    <div class="container" style="padding: 0;">
+      <p>紡絲助劑與鐵砂庫存智能管理系統 (BarmagSqlQC) | ROP 智能庫存扣除與採購簽核管理平台</p>
+    </div>
+  </footer>
+
+  <script src="js/app.js?v=20261011_v4"></script>
+</body>
+
+</html>

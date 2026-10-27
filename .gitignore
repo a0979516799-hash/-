@@ -1,0 +1,23 @@
+# 依賴套件
+node_modules/
+
+# 敏感環境設定檔 (嚴禁上傳到 Git / GitHub，保護資料庫帳密與金鑰)
+.env
+.env.local
+
+# 日誌與臨時檔案
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# 資料庫檔案 (本機 SQLite 測試檔，避免資料外洩)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# 編輯器與作業系統設定
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
