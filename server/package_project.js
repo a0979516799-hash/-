@@ -31,6 +31,7 @@ const itemsToInclude = [
   '一鍵匯入鐵砂至資料庫.bat',
   '一鍵Netlify發布.bat',
   '一鍵更新至GitHub.bat',
+  '一鍵獲取最新進度.bat',
   '一鍵打包專案與對話紀錄.bat'
 ];
 
