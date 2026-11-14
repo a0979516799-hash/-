@@ -1770,3 +1770,15 @@ input[type="number"] {
   color: #ffffff;
   border-color: var(--accent-cyan);
 }
+/* 日期選擇器主題優化 */
+input[type="date"] {
+  color: var(--text-main);
+  background-color: var(--bg-input);
+  color-scheme: light dark;
+}
+[data-theme="light"] input[type="date"] {
+  color-scheme: light;
+}
+[data-theme="dark"] input[type="date"] {
+  color-scheme: dark;
+}

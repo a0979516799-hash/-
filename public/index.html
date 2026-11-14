@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-TW" data-theme="dark">
+<html lang="zh-TW" data-theme="light">
 
 <head>
   <meta charset="UTF-8">
@@ -15,7 +15,7 @@
     rel="stylesheet">
 
   <!-- CSS 樣式表 -->
-  <link rel="stylesheet" href="css/style.css?v=20261011_v4">
+  <link rel="stylesheet" href="css/style.css?v=20261111_v5">
 </head>
 
 <body>
@@ -64,7 +64,7 @@
       </button>
 
       <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="點擊切換白天／夜間模式" aria-label="切換主題">
-        <span id="theme-icon">🌙</span> <span id="theme-text">夜間模式</span>
+        <span id="theme-icon">☀️</span> <span id="theme-text">白天模式</span>
       </button>
     </div>
   </nav>
@@ -173,8 +173,18 @@
           style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem;">
           <div
             style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-            <h3 style="font-size: 1.1rem; font-weight: 700;">📈 未來 14 天水位消耗趨勢預警圖</h3>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">📈 原油水位走勢與未來預測折線圖 (抓 2~3 個月)</h3>
+              <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 0.15rem;">包含每日生產扣除與排程到貨入庫，X 軸以精準日期呈現</p>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <select class="input-field" id="trend-timerange-select" onchange="renderTrendChart()"
+                style="padding: 0.25rem 0.5rem; font-size: 0.82rem; min-width: 130px;">
+                <option value="60" selected>未來 60 天 (2個月)</option>
+                <option value="90">未來 90 天 (3個月)</option>
+                <option value="30">未來 30 天 (1個月)</option>
+                <option value="14">未來 14 天</option>
+              </select>
               <select class="input-field" id="trend-oil-select" onchange="renderTrendChart()"
                 style="min-width: 140px; padding: 0.25rem 0.5rem; font-size: 0.82rem;">
                 <option value="all">全廠原油 (綜合)</option>
@@ -198,11 +208,11 @@
           </div>
         </div>
 
-        <!-- 右欄：各機台單日原油耗量排行 -->
+        <!-- 右欄：各油種單日原油耗量分布 -->
         <div
           style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem;">
-          <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.3rem;">📊 各機台單日原油耗量排行 (KG/天)</h3>
-          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1.25rem;">各產線機台每日實際原油消耗速率分析</p>
+          <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.3rem;">📊 各油種單日原油耗量分布 (KG/天)</h3>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1.25rem;">全廠各紡絲油品每日實際原油消耗與佔比分析</p>
           <div id="machine-bars-container" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
         </div>
       </section>
@@ -380,8 +390,18 @@
           style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.5rem; min-width: 0;">
           <div
             style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-            <h3 style="font-size: 1.1rem; font-weight: 700;">📈 未來 14 天鐵砂水位消耗趨勢預警圖</h3>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div>
+              <h3 style="font-size: 1.1rem; font-weight: 700;">📈 鐵砂水位走勢與未來預測折線圖 (抓 2~3 個月)</h3>
+              <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 0.15rem;">包含每日換裝耗用與到貨入庫排程，X 軸以精準日期呈現</p>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <select class="input-field" id="sand-trend-timerange-select" onchange="renderSandTrendChart()"
+                style="padding: 0.25rem 0.5rem; font-size: 0.82rem; min-width: 130px;">
+                <option value="60" selected>未來 60 天 (2個月)</option>
+                <option value="90">未來 90 天 (3個月)</option>
+                <option value="30">未來 30 天 (1個月)</option>
+                <option value="14">未來 14 天</option>
+              </select>
               <select class="input-field" id="sand-trend-select" onchange="renderSandTrendChart()"
                 style="min-width: 150px; padding: 0.25rem 0.5rem; font-size: 0.82rem;">
                 <option value="both" selected>粗砂 + 細砂 (雙規格)</option>
@@ -490,6 +510,10 @@
         <button class="modal-close" onclick="closeRestockModal()">&times;</button>
       </div>
       <div style="margin-bottom: 1.25rem;">
+        <label
+          style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">入庫日期 (精準日期)：</label>
+        <input type="date" id="restock-date" class="input-field" style="width:100%; margin-bottom:1rem;">
+
         <label
           style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">選擇進貨回補油種：</label>
         <select class="input-field" id="restock-oil-select" style="width:100%; margin-bottom:1rem;"></select>
@@ -603,6 +627,10 @@
         <button class="modal-close" onclick="closeSandRestockModal()">&times;</button>
       </div>
       <div style="margin-bottom: 1.25rem;">
+        <label
+          style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">入庫日期 (精準日期)：</label>
+        <input type="date" id="sand-restock-date" class="input-field" style="width:100%; margin-bottom:1rem;">
+
         <label
           style="display:block; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.4rem;">選擇入庫鐵砂規格：</label>
         <select class="input-field" id="sand-restock-type-select" style="width:100%; margin-bottom:1rem;">
@@ -854,7 +882,7 @@
     </div>
   </footer>
 
-  <script src="js/app.js?v=20261011_v4"></script>
+  <script src="js/app.js?v=20261111_v5"></script>
 </body>
 
 </html>

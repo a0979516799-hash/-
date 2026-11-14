@@ -92,6 +92,23 @@ let simulatedDays = 0;
 let totalDeductedNeatOil = 0;
 let capacityRate = 1.0; // 稼動率 (1.0 = 100%)
 let currentMainTab = 'oil'; // 'oil' 或 'sand'
+let oilRestockHistory = [];
+let sandRestockHistory = [];
+
+function getTodayDateString() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getBaseStartDate() {
+  if (consumptionData && consumptionData.length > 0 && consumptionData[0].start_date) {
+    return new Date(consumptionData[0].start_date + 'T00:00:00');
+  }
+  return new Date();
+}
 
 // ========================================================
 // 鐵砂耗材模組核心變數與預設配方庫 (比重固定 2.2 g/c.c.)
@@ -198,7 +215,9 @@ function saveToLocalStorage() {
       packRecipes,
       sandSimulatedDays,
       totalDeductedCoarseKg,
-      totalDeductedFineKg
+      totalDeductedFineKg,
+      oilRestockHistory,
+      sandRestockHistory
     };
     localStorage.setItem('spinning_oil_system_v3', JSON.stringify(payload));
   } catch (e) {
@@ -222,6 +241,8 @@ function loadFromLocalStorage() {
         if (slider) slider.value = Math.round(capacityRate * 100);
         if (capVal) capVal.textContent = `${Math.round(capacityRate * 100)}%`;
       }
+      if (Array.isArray(data.oilRestockHistory)) oilRestockHistory = data.oilRestockHistory;
+      if (Array.isArray(data.sandRestockHistory)) sandRestockHistory = data.sandRestockHistory;
       if (data.sandConfigs && data.sandConfigs.coarse && data.sandConfigs.fine) {
         sandConfigs = data.sandConfigs;
         sandConfigs.coarse.name = '粗砂';
@@ -487,10 +508,12 @@ function setRestockQty(qty) {
 function confirmRestock() {
   const select = document.getElementById('restock-oil-select');
   const input = document.getElementById('restock-amount');
+  const dateInput = document.getElementById('restock-date');
   if (!select || !input) return;
 
   const index = parseInt(select.value, 10);
   const qty = parseFloat(input.value);
+  const restockDate = (dateInput && dateInput.value) ? dateInput.value : getTodayDateString();
 
   if (isNaN(qty) || qty <= 0) {
     showToast('請輸入大於 0 的入庫數量', 'warning');
@@ -498,11 +521,18 @@ function confirmRestock() {
   }
 
   oilROPConfigs[index].currentStock += qty;
+  oilRestockHistory.push({
+    date: restockDate,
+    code: oilROPConfigs[index].code,
+    qty,
+    timestamp: Date.now()
+  });
+
   closeRestockModal();
   renderROPCards();
   renderTrendChart();
   saveToLocalStorage();
-  showToast(`✅ 進貨完成！【${oilROPConfigs[index].code}】目前存量增至 ${oilROPConfigs[index].currentStock.toFixed(1)} KG`, 'success');
+  showToast(`✅ 進貨完成！【${oilROPConfigs[index].code}】於 ${restockDate} 入庫 ${qty} KG，目前存量增至 ${oilROPConfigs[index].currentStock.toFixed(1)} KG`, 'success');
 }
 
 // 9. 正式採購請購單生成邏輯 (PO Sheet)
@@ -582,7 +612,7 @@ function closePOModal() {
   if (modal) modal.classList.remove('active');
 }
 
-// 10. 未來 14 天動態水位消耗趨勢折線圖 (HTML5 Canvas)
+// 10. 原油動態水位消耗與進貨預測折線圖 (抓 2~3 個月精準日期，納入入庫回補避免直線下降)
 function renderTrendChart() {
   const canvas = document.getElementById('trendCanvas');
   if (!canvas) return;
@@ -590,6 +620,9 @@ function renderTrendChart() {
   const select = document.getElementById('trend-oil-select');
   const selectedCode = select ? select.value : 'T-1206';
   const insightEl = document.getElementById('trend-insight-text');
+
+  const timerangeSelect = document.getElementById('trend-timerange-select');
+  const daysCount = timerangeSelect ? parseInt(timerangeSelect.value, 10) : 60;
 
   const container = canvas.parentElement;
   const w = container ? container.clientWidth : (canvas.getBoundingClientRect().width || 500);
@@ -610,7 +643,7 @@ function renderTrendChart() {
   const padLeft = 65;
   const padRight = 30;
   const padTop = 25;
-  const padBottom = 40;
+  const padBottom = 45;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
 
@@ -623,6 +656,7 @@ function renderTrendChart() {
   let dailyRate = 0;
   let ropVal = 0;
   let ssVal = 0;
+  let leadTime = 5;
   let displayName = '';
 
   if (isAll) {
@@ -634,22 +668,78 @@ function renderTrendChart() {
       ropVal += Math.round((d * o.leadTime) + o.safetyStock);
       ssVal += o.safetyStock;
     });
+    leadTime = 5;
   } else if (targetItem) {
     displayName = targetItem.code;
     startStock = targetItem.currentStock;
     dailyRate = getEffectiveDemand(targetItem);
     ropVal = Math.round((dailyRate * targetItem.leadTime) + targetItem.safetyStock);
     ssVal = targetItem.safetyStock;
+    leadTime = targetItem.leadTime || 5;
   }
 
-  const daysCount = 14;
+  // 決定標準到貨批量 (公斤 KG)
+  let replenishBatch = 1000;
+  if (isAll) {
+    replenishBatch = Math.max(2500, Math.round(dailyRate * 12));
+  } else if (targetItem) {
+    replenishBatch = Math.max(600, Math.round(dailyRate * (leadTime * 2.5)));
+  }
+
+  const baseDate = getBaseStartDate();
   const points = [];
+  let runningStock = startStock;
+  let orderInFlight = false;
+  let orderArrivalDay = -1;
+  let totalRestocks = 0;
+
   for (let t = 0; t <= daysCount; t++) {
-    const stockAtDay = Math.max(0, startStock - (dailyRate * t));
-    points.push({ day: t, stock: stockAtDay });
+    const curDate = new Date(baseDate.getTime() + t * 86400000);
+    const dateStr = `${curDate.getMonth() + 1}/${curDate.getDate()}`;
+    const isoDate = curDate.toISOString().slice(0, 10);
+    let restockToday = 0;
+
+    // 1. 登記的使用者真實手動入庫
+    const userInbounds = oilRestockHistory.filter(h => {
+      if (isAll) return h.date === isoDate;
+      return h.date === isoDate && h.code === selectedCode;
+    });
+    userInbounds.forEach(h => { restockToday += h.qty; });
+
+    // 2. 抵達之採購補貨 (ROP 到貨回補)
+    if (orderInFlight && t >= orderArrivalDay) {
+      restockToday += replenishBatch;
+      orderInFlight = false;
+    }
+
+    if (restockToday > 0) {
+      runningStock += restockToday;
+      totalRestocks++;
+    }
+
+    // 3. 每日生產正常耗用
+    if (t > 0) {
+      runningStock = Math.max(0, runningStock - dailyRate);
+    }
+
+    // 4. 判斷是否降至再訂購點 (ROP)，觸發採購在途訂單
+    if (runningStock <= ropVal && !orderInFlight) {
+      orderInFlight = true;
+      orderArrivalDay = t + Math.max(2, leadTime);
+    }
+
+    points.push({
+      day: t,
+      dateStr,
+      isoDate,
+      stock: runningStock,
+      isRestock: restockToday > 0,
+      restockQty: restockToday
+    });
   }
 
-  const maxVal = Math.max(startStock * 1.15, ropVal * 1.25, 100);
+  const maxStock = Math.max(...points.map(p => p.stock), ropVal * 1.25, 100);
+  const maxVal = maxStock * 1.15;
   const getX = d => padLeft + (d / daysCount) * plotW;
   const getY = v => padTop + plotH - (v / maxVal) * plotH;
 
@@ -676,16 +766,24 @@ function renderTrendChart() {
     ctx.fillText(`${Math.round(val)} KG`, padLeft - 8, y + 4);
   }
 
-  // 垂直天數刻度
+  // 垂直日期刻度 (X 軸精準日期呈現，間距依天數自適應)
+  let dateStep = 7;
+  if (daysCount <= 14) dateStep = 2;
+  else if (daysCount <= 30) dateStep = 5;
+  else if (daysCount <= 60) dateStep = 7;
+  else dateStep = 10;
+
   ctx.textAlign = 'center';
   ctx.strokeStyle = gridColor;
-  for (let d = 0; d <= daysCount; d += 2) {
+  for (let d = 0; d <= daysCount; d += dateStep) {
     const x = getX(d);
     ctx.beginPath();
     ctx.moveTo(x, padTop);
     ctx.lineTo(x, padTop + plotH);
     ctx.stroke();
-    ctx.fillText(`${d}天`, x, h - padBottom + 18);
+    if (points[d]) {
+      ctx.fillText(points[d].dateStr, x, h - padBottom + 18);
+    }
   }
 
   // 安全庫存線 (SS 紅色虛線)
@@ -726,7 +824,7 @@ function renderTrendChart() {
     ctx.fillText(`ROP (${ropVal} KG)`, padLeft + 10, ropY - 5);
   }
 
-  // 消耗曲線
+  // 消耗與入庫折線
   ctx.beginPath();
   points.forEach((p, idx) => {
     const x = getX(p.day);
@@ -739,6 +837,7 @@ function renderTrendChart() {
   ctx.lineWidth = 2.5;
   ctx.stroke();
 
+  // 漸層陰影填充
   ctx.lineTo(getX(daysCount), getY(0));
   ctx.lineTo(getX(0), getY(0));
   ctx.closePath();
@@ -748,31 +847,35 @@ function renderTrendChart() {
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // 圓點
+  // 節點繪製 (入庫到貨點特顯綠色，常規點按庫存狀態著色)
   points.forEach(p => {
     const x = getX(p.day);
     const y = getY(p.stock);
     ctx.beginPath();
-    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-    ctx.fillStyle = p.stock <= ssVal ? '#ef4444' : (p.stock <= ropVal ? '#f59e0b' : '#06b6d4');
-    ctx.fill();
-    ctx.strokeStyle = chartDotBorder;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    if (p.isRestock) {
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#10b981';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    } else if (daysCount <= 30 || p.day % 2 === 0) {
+      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = p.stock <= ssVal ? '#ef4444' : (p.stock <= ropVal ? '#f59e0b' : '#06b6d4');
+      ctx.fill();
+      ctx.strokeStyle = chartDotBorder;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   });
 
-  // 分析文字 (簡潔有力)
-  const ropDay = dailyRate > 0 ? ((startStock - ropVal) / dailyRate) : -1;
-  const ssDay = dailyRate > 0 ? ((startStock - ssVal) / dailyRate) : -1;
-
+  // 分析文字 (說明包含入庫回補與精準日期)
   if (insightEl) {
-    if (startStock <= ssVal) {
-      insightEl.innerHTML = `<span style="color:var(--danger); font-weight:700;">☠️ 【${displayName}】已破安全存量 (${ssVal} KG)！請立即叫料避免停機。</span>`;
-    } else if (startStock <= ropVal) {
-      insightEl.innerHTML = `<span style="color:var(--warning); font-weight:700;">🚨 【${displayName}】已達再訂購點 (${ropVal} KG)！預估第 ${ssDay.toFixed(1)} 天侵蝕安全庫存。</span>`;
-    } else {
-      insightEl.innerHTML = `<strong>【${displayName}】</strong>目前存量充足，預估在第 <strong>${ropDay.toFixed(1)} 天</strong>到達再訂購點，第 <strong>${ssDay.toFixed(1)} 天</strong>觸及安全庫存。`;
-    }
+    insightEl.innerHTML = `
+      <strong>【${displayName}】${daysCount} 天走勢預測：</strong>
+      當前基準存量 <strong>${startStock.toFixed(0)} KG</strong>，日耗 <strong>${dailyRate.toFixed(1)} KG/天</strong>。
+      折線圖已結合<strong>每日生產耗用</strong>與<strong>採購到貨入庫</strong>（預估涵蓋 ${totalRestocks} 次進貨回補 🟢），折線呈動態健康鋸齒安全水位，不再直線下降至零。
+    `;
   }
 }
 
@@ -859,28 +962,45 @@ function updateTopMetrics() {
   if (emulsionEl) emulsionEl.innerHTML = `${effEmulsion} <span style="font-size: 1rem; font-weight: 500;">KG/天</span>`;
 }
 
-// 13. 機台耗量長條圖 (以單日原油耗量 KG/天 為排行標準)
+// 13. 各油種單日原油耗量分布 (以各油種每日原油耗量 KG/天 與佔比為排行標準)
 function renderMachineChart() {
   const container = document.getElementById('machine-bars-container');
   if (!container) return;
   container.innerHTML = '';
 
-  const machineMap = {};
+  const oilMap = {};
+  let totalNeat = 0;
   consumptionData.forEach(item => {
     const days = calcDays(item.start_date, item.end_date);
     const dailyNeat = item.neat_oil_consumption / days;
-    if (!machineMap[item.machine_no]) machineMap[item.machine_no] = 0;
-    machineMap[item.machine_no] += dailyNeat;
+    const key = item.oil_type;
+    if (!oilMap[key]) oilMap[key] = 0;
+    oilMap[key] += dailyNeat;
+    totalNeat += dailyNeat;
   });
 
-  const sortedMachines = Object.keys(machineMap)
-    .map(m => ({ machine: m, dailyNeatOil: parseFloat(machineMap[m].toFixed(1)) }))
-    .sort((a, b) => b.dailyNeatOil - a.dailyNeatOil);
+  const sortedOils = Object.keys(oilMap)
+    .map(oil => ({
+      oil,
+      dailyNeat: parseFloat(oilMap[oil].toFixed(1)),
+      pct: totalNeat > 0 ? ((oilMap[oil] / totalNeat) * 100).toFixed(1) : '0'
+    }))
+    .sort((a, b) => b.dailyNeat - a.dailyNeat);
 
-  const maxVal = sortedMachines.length > 0 ? sortedMachines[0].dailyNeatOil : 100;
+  const maxVal = sortedOils.length > 0 ? sortedOils[0].dailyNeat : 100;
 
-  sortedMachines.forEach((item, index) => {
-    const percent = Math.round((item.dailyNeatOil / maxVal) * 100);
+  const colorPalettes = [
+    'linear-gradient(90deg, #06b6d4, #3b82f6)',
+    'linear-gradient(90deg, #3b82f6, #6366f1)',
+    'linear-gradient(90deg, #10b981, #06b6d4)',
+    'linear-gradient(90deg, #f59e0b, #d97706)',
+    'linear-gradient(90deg, #ec4899, #8b5cf6)',
+    'linear-gradient(90deg, #8b5cf6, #3b82f6)'
+  ];
+
+  sortedOils.forEach((item, index) => {
+    const percent = Math.round((item.dailyNeat / maxVal) * 100);
+    const grad = colorPalettes[index % colorPalettes.length];
 
     const row = document.createElement('div');
     row.style.display = 'flex';
@@ -889,11 +1009,15 @@ function renderMachineChart() {
     row.style.fontSize = '0.85rem';
 
     row.innerHTML = `
-      <div style="width: 70px; font-weight: 700; color: var(--text-main);">機台 ${item.machine}</div>
-      <div style="flex: 1; height: 10px; background: var(--meter-bg); border-radius: 5px; overflow: hidden;">
-        <div style="width: ${percent}%; height: 100%; border-radius: 5px; background: ${index === 0 ? 'var(--accent-gradient)' : 'linear-gradient(90deg, #3b82f6, #06b6d4)'};"></div>
+      <div style="width: 130px; font-weight: 700; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${item.oil}">
+        ${item.oil}
       </div>
-      <div style="width: 95px; text-align: right; font-weight: 700; font-family: monospace; color: var(--accent-cyan);">${item.dailyNeatOil} KG/天</div>
+      <div style="flex: 1; height: 10px; background: var(--meter-bg); border-radius: 5px; overflow: hidden;">
+        <div style="width: ${percent}%; height: 100%; border-radius: 5px; background: ${grad}; transition: width 0.3s ease;"></div>
+      </div>
+      <div style="width: 130px; text-align: right; font-weight: 700; font-family: monospace; color: var(--accent-cyan); white-space: nowrap;">
+        ${item.dailyNeat} KG <span style="font-size:0.75rem; color:var(--text-dim); font-weight:500;">(${item.pct}%)</span>
+      </div>
     `;
 
     container.appendChild(row);
@@ -994,7 +1118,7 @@ function exportToCSV() {
 
 // 16. 主題切換 (白天模式 ☀️ ↔ 夜間模式 🌙 全局統一切換)
 function initTheme() {
-  const saved = localStorage.getItem('theme') || 'dark';
+  const saved = localStorage.getItem('theme') || 'light';
   document.documentElement.setAttribute('data-theme', saved);
   updateThemeIcon(saved);
 }
@@ -1285,9 +1409,7 @@ function renderSandROPCards() {
                    onchange="updateSandStock('${key}', this.value)">
             <span class="rop-stock-unit">KG</span>
           </div>
-          <div class="rop-stock-barrels">
-            ≈ <strong>${bags}</strong> 袋 <span style="font-size:0.72rem; opacity:0.7;">(25kg/袋)</span>
-          </div>
+
         </div>
 
         <!-- 水位健康條 -->
@@ -1862,6 +1984,10 @@ function resetSandInventory() {
 function openSandRestockModal() {
   const modal = document.getElementById('sand-restock-modal');
   if (modal) {
+    const dateInput = document.getElementById('sand-restock-date');
+    if (dateInput && !dateInput.value) {
+      dateInput.value = getTodayDateString();
+    }
     modal.classList.add('active');
     updateSandRestockKgDisplay();
   }
@@ -1894,10 +2020,13 @@ function updateSandRestockKgDisplay() {
 function confirmSandRestock() {
   const select = document.getElementById('sand-restock-type-select');
   const input = document.getElementById('sand-restock-bags');
+  const dateInput = document.getElementById('sand-restock-date');
   if (!select || !input) return;
 
   const key = select.value;
   const bags = parseInt(input.value, 10);
+  const restockDate = (dateInput && dateInput.value) ? dateInput.value : getTodayDateString();
+
   if (isNaN(bags) || bags <= 0) {
     showToast('請輸入大於 0 的入庫袋數', 'warning');
     return;
@@ -1907,10 +2036,18 @@ function confirmSandRestock() {
   const addKg = bags * SAND_BAG_KG;
   item.currentStock += addKg;
 
+  sandRestockHistory.push({
+    date: restockDate,
+    type: key,
+    bags,
+    qty: addKg,
+    timestamp: Date.now()
+  });
+
   closeSandRestockModal();
   saveToLocalStorage();
   renderSandView();
-  showToast(`✅ 鐵砂進貨入庫完成！【${item.name} (${item.code})】增加 ${bags} 袋 (+${addKg} KG)，目前存量增至 ${item.currentStock.toFixed(1)} KG`, 'success');
+  showToast(`✅ 鐵砂進貨入庫完成！【${item.name} (${item.code})】於 ${restockDate} 入庫 ${bags} 袋 (+${addKg} KG)，目前存量增至 ${item.currentStock.toFixed(1)} KG`, 'success');
 }
 
 // 12. 鐵砂採購請購單 Modal (白底黑字正規工業簽核表單)
@@ -1999,7 +2136,7 @@ function closeSandPOModal() {
   if (modal) modal.classList.remove('active');
 }
 
-// 13. 未來 14 天鐵砂水位消耗趨勢折線圖 (HTML5 Canvas)
+// 13. 鐵砂水位走勢與未來預測折線圖 (與紡絲助劑完全相同之工業安全週轉與到貨排程規則)
 function renderSandTrendChart() {
   const canvas = document.getElementById('sandTrendCanvas');
   if (!canvas) return;
@@ -2007,6 +2144,9 @@ function renderSandTrendChart() {
   const select = document.getElementById('sand-trend-select');
   const viewMode = select ? select.value : 'both';
   const insightEl = document.getElementById('sand-trend-insight-text');
+
+  const timerangeSelect = document.getElementById('sand-trend-timerange-select');
+  const daysCount = timerangeSelect ? parseInt(timerangeSelect.value, 10) : 60;
 
   const container = canvas.parentElement;
   const w = container ? container.clientWidth : (canvas.getBoundingClientRect().width || 500);
@@ -2027,28 +2167,117 @@ function renderSandTrendChart() {
   const padLeft = 65;
   const padRight = 30;
   const padTop = 25;
-  const padBottom = 40;
+  const padBottom = 45;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
 
   ctx.clearRect(0, 0, w, h);
 
   const totals = getSandDailyTotals();
-  const daysCount = 14;
+  const baseDate = getBaseStartDate();
 
+  // 1. 粗砂參數與到貨批量 (以 20 袋 500 KG 為標準到貨批量)
   const coarseStart = sandConfigs.coarse.currentStock;
   const coarseRate = totals.coarseDailyDemand;
-  const coarseRop = Math.round((coarseRate * sandConfigs.coarse.leadTime) + sandConfigs.coarse.safetyStock);
+  const coarseSs = sandConfigs.coarse.safetyStock;
+  const coarseRop = Math.round((coarseRate * sandConfigs.coarse.leadTime) + coarseSs);
+  const coarseBatch = Math.max(500, Math.round(coarseRate * (sandConfigs.coarse.leadTime * 2.5)));
 
+  // 2. 細砂參數與到貨批量 (以 10 袋 250 KG 為標準到貨批量)
   const fineStart = sandConfigs.fine.currentStock;
   const fineRate = totals.fineDailyDemand;
-  const fineRop = Math.round((fineRate * sandConfigs.fine.leadTime) + sandConfigs.fine.safetyStock);
+  const fineSs = sandConfigs.fine.safetyStock;
+  const fineRop = Math.round((fineRate * sandConfigs.fine.leadTime) + fineSs);
+  const fineBatch = Math.max(250, Math.round(fineRate * (sandConfigs.fine.leadTime * 2.5)));
+
+  // 模擬粗砂趨勢 (完全對標助劑規則：日耗扣除 + 使用者登記入庫 + ROP 交期到貨跳升)
+  const coarsePts = [];
+  let coarseRunning = coarseStart;
+  let coarseInFlight = false;
+  let coarseArrivalDay = -1;
+  let coarseRestockCount = 0;
+
+  // 模擬細砂趨勢
+  const finePts = [];
+  let fineRunning = fineStart;
+  let fineInFlight = false;
+  let fineArrivalDay = -1;
+  let fineRestockCount = 0;
+
+  for (let t = 0; t <= daysCount; t++) {
+    const curDate = new Date(baseDate.getTime() + t * 86400000);
+    const dateStr = `${curDate.getMonth() + 1}/${curDate.getDate()}`;
+    const isoDate = curDate.toISOString().slice(0, 10);
+
+    // --- 粗砂動態模擬 ---
+    let coarseRestockToday = 0;
+    const userCoarseInbounds = sandRestockHistory.filter(h => h.date === isoDate && h.type === 'coarse');
+    userCoarseInbounds.forEach(h => { coarseRestockToday += h.qty; });
+
+    if (coarseInFlight && t >= coarseArrivalDay) {
+      coarseRestockToday += coarseBatch;
+      coarseInFlight = false;
+    }
+    if (coarseRestockToday > 0) {
+      coarseRunning += coarseRestockToday;
+      coarseRestockCount++;
+    }
+    if (t > 0) {
+      coarseRunning = Math.max(0, coarseRunning - coarseRate);
+    }
+    if (coarseRunning <= coarseRop && !coarseInFlight) {
+      coarseInFlight = true;
+      coarseArrivalDay = t + Math.max(2, sandConfigs.coarse.leadTime);
+    }
+    coarsePts.push({
+      day: t,
+      dateStr,
+      isoDate,
+      stock: coarseRunning,
+      isRestock: coarseRestockToday > 0,
+      restockQty: coarseRestockToday
+    });
+
+    // --- 細砂動態模擬 ---
+    let fineRestockToday = 0;
+    const userFineInbounds = sandRestockHistory.filter(h => h.date === isoDate && h.type === 'fine');
+    userFineInbounds.forEach(h => { fineRestockToday += h.qty; });
+
+    if (fineInFlight && t >= fineArrivalDay) {
+      fineRestockToday += fineBatch;
+      fineInFlight = false;
+    }
+    if (fineRestockToday > 0) {
+      fineRunning += fineRestockToday;
+      fineRestockCount++;
+    }
+    if (t > 0) {
+      fineRunning = Math.max(0, fineRunning - fineRate);
+    }
+    if (fineRunning <= fineRop && !fineInFlight) {
+      fineInFlight = true;
+      fineArrivalDay = t + Math.max(2, sandConfigs.fine.leadTime);
+    }
+    finePts.push({
+      day: t,
+      dateStr,
+      isoDate,
+      stock: fineRunning,
+      isRestock: fineRestockToday > 0,
+      restockQty: fineRestockToday
+    });
+  }
 
   // 決定坐標軸最大刻度
-  let maxVal = Math.max(coarseStart * 1.15, coarseRop * 1.3, 100);
+  let maxStockVal = 100;
   if (viewMode === 'fine') {
-    maxVal = Math.max(fineStart * 1.15, fineRop * 1.3, 100);
+    maxStockVal = Math.max(...finePts.map(p => p.stock), fineRop * 1.25);
+  } else if (viewMode === 'coarse') {
+    maxStockVal = Math.max(...coarsePts.map(p => p.stock), coarseRop * 1.25);
+  } else {
+    maxStockVal = Math.max(...coarsePts.map(p => p.stock), ...finePts.map(p => p.stock), coarseRop * 1.25);
   }
+  const maxVal = maxStockVal * 1.15;
 
   const getX = d => padLeft + (d / daysCount) * plotW;
   const getY = v => padTop + plotH - (v / maxVal) * plotH;
@@ -2076,20 +2305,67 @@ function renderSandTrendChart() {
     ctx.fillText(`${Math.round(val)} KG`, padLeft - 8, y + 4);
   }
 
-  // 垂直天數刻度
+  // 垂直日期刻度 (X 軸精準日期呈現，間距依天數自適應)
+  let dateStep = 7;
+  if (daysCount <= 14) dateStep = 2;
+  else if (daysCount <= 30) dateStep = 5;
+  else if (daysCount <= 60) dateStep = 7;
+  else dateStep = 10;
+
   ctx.textAlign = 'center';
   ctx.strokeStyle = gridColor;
-  for (let d = 0; d <= daysCount; d += 2) {
+  for (let d = 0; d <= daysCount; d += dateStep) {
     const x = getX(d);
     ctx.beginPath();
     ctx.moveTo(x, padTop);
     ctx.lineTo(x, padTop + plotH);
     ctx.stroke();
-    ctx.fillText(`${d}天`, x, h - padBottom + 18);
+    if (coarsePts[d]) {
+      ctx.fillText(coarsePts[d].dateStr, x, h - padBottom + 18);
+    }
   }
 
-  // 繪製單條折線的輔助函式
-  function drawLine(points, color, label) {
+  // 繪製安全庫存虛線 (SS 紅色虛線)
+  function drawSsLine(ss, label) {
+    if (ss <= 0) return;
+    const y = getY(ss);
+    ctx.save();
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(w - padRight, y);
+    ctx.stroke();
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 10px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${label} SS (${ss} KG)`, padLeft + 6, y - 5);
+    ctx.restore();
+  }
+
+  // 繪製再訂購點虛線 (ROP 警戒虛線)
+  function drawRopLine(rop, color, label) {
+    if (rop <= 0) return;
+    const y = getY(rop);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(w - padRight, y);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = 'bold 10px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${label} ROP (${rop} KG)`, padLeft + 6, y - 5);
+    ctx.restore();
+  }
+
+  // 繪製單條折線與漸層陰影填充
+  function drawLineWithFill(points, strokeColor, fillColorStart) {
+    // 1. 漸層背景填充
     ctx.beginPath();
     points.forEach((pt, i) => {
       const x = getX(pt.day);
@@ -2097,64 +2373,67 @@ function renderSandTrendChart() {
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = color;
+    ctx.lineTo(getX(daysCount), getY(0));
+    ctx.lineTo(getX(0), getY(0));
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
+    grad.addColorStop(0, fillColorStart);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0.01)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 2. 曲線主線條
+    ctx.beginPath();
+    points.forEach((pt, i) => {
+      const x = getX(pt.day);
+      const y = getY(pt.stock);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2.5;
     ctx.stroke();
 
-    // 節點
+    // 3. 節點繪製 (入庫到貨點特顯綠色圓點 🟢，常規點按庫存狀態繪製)
     points.forEach(pt => {
       const x = getX(pt.day);
       const y = getY(pt.stock);
       ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
+      if (pt.isRestock) {
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#10b981';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else if (daysCount <= 30 || pt.day % 2 === 0) {
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = strokeColor;
+        ctx.fill();
+      }
     });
-  }
-
-  // 繪製 ROP 警戒虛線
-  function drawRopLine(rop, color, label) {
-    if (rop <= 0) return;
-    const y = getY(rop);
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(padLeft, y);
-    ctx.lineTo(w - padRight, y);
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.font = '10px Inter, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${label} ROP: ${rop} KG`, padLeft + 6, y - 5);
-    ctx.restore();
   }
 
   // 繪製粗砂線
   if (viewMode === 'both' || viewMode === 'coarse') {
-    const coarsePts = [];
-    for (let t = 0; t <= daysCount; t++) {
-      coarsePts.push({ day: t, stock: Math.max(0, coarseStart - (coarseRate * t)) });
-    }
-    drawLine(coarsePts, '#f59e0b', '粗砂');
+    const fillAlpha = viewMode === 'both' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(245, 158, 11, 0.22)';
+    drawLineWithFill(coarsePts, '#f59e0b', fillAlpha);
+    drawSsLine(coarseSs, '粗砂');
     drawRopLine(coarseRop, '#f59e0b', '粗砂');
   }
 
   // 繪製細砂線
   if (viewMode === 'both' || viewMode === 'fine') {
-    const finePts = [];
-    for (let t = 0; t <= daysCount; t++) {
-      finePts.push({ day: t, stock: Math.max(0, fineStart - (fineRate * t)) });
-    }
-    drawLine(finePts, '#06b6d4', '細砂');
+    const fillAlpha = viewMode === 'both' ? 'rgba(6, 182, 212, 0.12)' : 'rgba(6, 182, 212, 0.22)';
+    drawLineWithFill(finePts, '#06b6d4', fillAlpha);
+    drawSsLine(fineSs, '細砂');
     drawRopLine(fineRop, '#06b6d4', '細砂');
   }
 
-  // 圖例 (Legend)
+  // 圖例 (Legend) - 包含入庫到貨標記
   ctx.save();
   ctx.font = '11px Inter, sans-serif';
-  let legX = w - padRight - 160;
+  let legX = w - padRight - 230;
   if (viewMode === 'both') {
     ctx.fillStyle = '#f59e0b';
     ctx.fillRect(legX, 10, 10, 10);
@@ -2166,28 +2445,38 @@ function renderSandTrendChart() {
     ctx.fillRect(legX + 85, 10, 10, 10);
     ctx.fillStyle = legendTextColor;
     ctx.fillText('細砂 (140/200)', legX + 100, 19);
+
+    ctx.fillStyle = '#10b981';
+    ctx.beginPath();
+    ctx.arc(legX + 185, 15, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = legendTextColor;
+    ctx.fillText('入庫回補', legX + 195, 19);
+  } else {
+    ctx.fillStyle = viewMode === 'coarse' ? '#f59e0b' : '#06b6d4';
+    ctx.fillRect(legX + 80, 10, 10, 10);
+    ctx.fillStyle = legendTextColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(viewMode === 'coarse' ? '粗砂 (25/50)' : '細砂 (140/200)', legX + 95, 19);
+
+    ctx.fillStyle = '#10b981';
+    ctx.beginPath();
+    ctx.arc(legX + 185, 15, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = legendTextColor;
+    ctx.fillText('入庫回補', legX + 195, 19);
   }
   ctx.restore();
 
-  // 智慧預警文字
+  // 智慧分析文字 (格式與紡絲油完全一致)
   if (insightEl) {
-    const coarseDaysToRop = coarseRate > 0 ? ((coarseStart - coarseRop) / coarseRate).toFixed(1) : 999;
-    const fineDaysToRop = fineRate > 0 ? ((fineStart - fineRop) / fineRate).toFixed(1) : 999;
-
-    let text = `💡 <strong>智慧水位預警</strong>：以全廠目前稼動率 (${Math.round(capacityRate * 100)}%) 計算，`;
-    if (coarseDaysToRop <= 0) {
-      text += `<span style="color:var(--danger); font-weight:700;">粗砂已達或低於 ROP 再訂購點！</span> `;
-    } else {
-      text += `粗砂預計 <strong>${coarseDaysToRop} 天</strong> 後觸發 ROP；`;
-    }
-
-    if (fineDaysToRop <= 0) {
-      text += `<span style="color:var(--danger); font-weight:700;">細砂已達或低於 ROP 再訂購點！</span>`;
-    } else {
-      text += `細砂預計 <strong>${fineDaysToRop} 天</strong> 後觸發 ROP。`;
-    }
-
-    insightEl.innerHTML = text;
+    const totalRestocks = coarseRestockCount + fineRestockCount;
+    insightEl.innerHTML = `
+      <strong>【鐵砂耗材】${daysCount} 天走勢預測：</strong>
+      粗砂存量 <strong>${coarseStart.toFixed(0)} KG</strong> (日耗 ${coarseRate.toFixed(1)} KG/天)，
+      細砂存量 <strong>${fineStart.toFixed(0)} KG</strong> (日耗 ${fineRate.toFixed(1)} KG/天)。
+      折線圖已結合<strong>每日換裝耗減</strong>與<strong>採購到貨入庫</strong>（共計 ${totalRestocks} 次進貨回補 🟢），折線呈動態健康鋸齒安全水位，不再直線下降至零。
+    `;
   }
 }
 
