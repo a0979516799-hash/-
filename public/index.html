@@ -1095,6 +1095,17 @@
           </div>
         </div>
 
+                <div style="background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.75rem 0.9rem;">
+          <div style="font-size: 0.8rem; font-weight: 700; color: var(--accent-cyan); margin-bottom: 0.4rem;">
+            ☁️ 雲端後端 API 網址 (供 Netlify 24小時連線使用)
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="text" id="modal-cloud-api-input" class="input-field" placeholder="例如: https://barmag-api.onrender.com (本機免填)"
+              style="flex: 1; font-size: 0.8rem; padding: 0.35rem 0.6rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="saveCloudApiUrl()" style="white-space: nowrap;">儲存並連線</button>
+          </div>
+        </div>
+
         <div id="modal-db-connect-hint" style="display: none; padding: 0.75rem 0.9rem; border-radius: var(--radius-sm); font-size: 0.82rem; line-height: 1.5; background: var(--bg-inset); border: 1px solid var(--border-color);"></div>
 
         <div style="display: flex; gap: 0.65rem; justify-content: flex-end; flex-wrap: wrap; margin-top: 0.25rem;">
@@ -1119,7 +1130,7 @@
     </div>
   </footer>
 
-  <script src="js/app.js?v=20261126_v33"></script>
+  <script src="js/app.js?v=20261126_v34"></script>
 </body>
 
 </html>

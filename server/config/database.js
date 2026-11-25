@@ -35,10 +35,180 @@ class Database {
   }
 
   async init() {
-    if (this.type === 'mssql') {
+    if (this.type === 'postgres' || (process.env.DATABASE_URL && this.type !== 'mssql')) {
+      this.type = 'postgres';
+      await this.initPostgres();
+    } else if (this.type === 'mssql') {
       await this.tryConnectMssqlSmart();
     } else {
       await this.initSqlite();
+    }
+  }
+
+  /**
+   * 雲端 PostgreSQL 安全連線 (支援 Supabase / Neon / Render SSL 加密連線)
+   */
+  async initPostgres() {
+    const { Pool } = require('pg');
+    const connStr = process.env.DATABASE_URL;
+    if (!connStr) {
+      console.error('❌ 未設定 DATABASE_URL，無法連線雲端 PostgreSQL');
+      this.connected = false;
+      return;
+    }
+
+    try {
+      this.pgPool = new Pool({
+        connectionString: connStr,
+        ssl: { rejectUnauthorized: false },
+        max: 10,
+        idleTimeoutMillis: 30000
+      });
+
+      await this.pgPool.query('SELECT 1');
+      this.connected = true;
+      this.type = 'postgres';
+      console.log('✅ 雲端 PostgreSQL (SSL/TLS) 安全連線成功！');
+
+      // 自動建立雲端資料表 (僅存放彙總統計與庫存主檔，191萬筆原始明細不出廠)
+      await this.pgPool.query(`
+        CREATE TABLE IF NOT EXISTS monthly_production_summary (
+          month VARCHAR(20) PRIMARY KEY,
+          doff_count INTEGER NOT NULL,
+          weight_ton DOUBLE PRECISION NOT NULL,
+          weight_kg DOUBLE PRECISION NOT NULL,
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_oil_consumptions (
+          id SERIAL PRIMARY KEY,
+          oil_type VARCHAR(100),
+          machine_no VARCHAR(50),
+          start_date VARCHAR(50),
+          end_date VARCHAR(50),
+          emulsion_consumption DOUBLE PRECISION,
+          neat_oil_consumption DOUBLE PRECISION
+        );
+
+        CREATE TABLE IF NOT EXISTS materials (
+          id SERIAL PRIMARY KEY,
+          code VARCHAR(100) UNIQUE,
+          name VARCHAR(200),
+          category VARCHAR(100),
+          spec VARCHAR(200),
+          batch_no VARCHAR(100),
+          expire_date VARCHAR(50),
+          location VARCHAR(100),
+          stock_quantity DOUBLE PRECISION,
+          safety_stock DOUBLE PRECISION,
+          lead_time INTEGER,
+          unit VARCHAR(50),
+          daily_demand DOUBLE PRECISION,
+          status VARCHAR(50) DEFAULT 'ACTIVE'
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_transactions (
+          id SERIAL PRIMARY KEY,
+          tx_no VARCHAR(100) UNIQUE,
+          material_id INTEGER,
+          type VARCHAR(50),
+          quantity DOUBLE PRECISION,
+          unit VARCHAR(50),
+          department VARCHAR(100),
+          purpose TEXT,
+          batch_no VARCHAR(100),
+          status VARCHAR(50),
+          operator VARCHAR(100),
+          auditor VARCHAR(100),
+          audit_comment TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          audited_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS sand_change_records (
+          id SERIAL PRIMARY KEY,
+          record_id INTEGER,
+          sm VARCHAR(50),
+          pos VARCHAR(50),
+          pack_type VARCHAR(50),
+          cause_code VARCHAR(100),
+          shift VARCHAR(20),
+          change_date VARCHAR(50),
+          change_time VARCHAR(50),
+          change_user VARCHAR(100),
+          merge_code VARCHAR(50),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(100) UNIQUE,
+          password_hash VARCHAR(255),
+          email VARCHAR(200),
+          role VARCHAR(50),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS security_logs (
+          id SERIAL PRIMARY KEY,
+          ip VARCHAR(100),
+          event_type VARCHAR(100),
+          details TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+
+      // 若 materials 為空，植入預設 8 筆物料
+      const matRes = await this.pgPool.query('SELECT COUNT(*)::int AS count FROM materials');
+      if ((matRes.rows[0]?.count || 0) === 0) {
+        const seeds = [
+          ['B-1823', '紡絲油劑 B-1823', '紡絲助劑', '200KG/桶', 'B2605-A1', '2026-11-20', 'A-01-01', 1800.0, 400.0, 5, 'KG', 162.57],
+          ['P-1213', '紡絲油劑 P-1213', '紡絲助劑', '200KG/桶', 'P2605-C2', '2026-12-15', 'A-01-02', 2200.0, 500.0, 5, 'KG', 232.22],
+          ['T-1206', '紡絲油劑 T-1206', '紡絲助劑', '200KG/桶', 'T2604-B3', '2026-10-30', 'A-02-01', 2400.0, 600.0, 5, 'KG', 393.98],
+          ['T-2227', '紡絲油劑 T-2227', '紡絲助劑', '200KG/桶', 'T2605-D1', '2026-11-10', 'A-02-02', 3000.0, 700.0, 4, 'KG', 358.59],
+          ['T2227+YT5355', '特種油劑 T2227+YT5355', '紡絲助劑', '200KG/桶', 'TY2605-S1', '2026-09-25', 'A-03-01', 650.0, 200.0, 7, 'KG', 48.42],
+          ['XF-5010+T-2124', '特種油劑 XF-5010+T-2124', '紡絲助劑', '200KG/桶', 'XF2604-C', '2026-10-05', 'A-03-02', 500.0, 150.0, 7, 'KG', 42.51],
+          ['25/50', '粗砂', '鐵砂耗材', '下層支撐導流 (目數 25/50)', 'SAND-C2601', '2028-12-31', 'S-01-01', 1500.0, 300.0, 7, 'KG', 52.0],
+          ['140/200', '細砂', '鐵砂耗材', '上層高精過濾 (目數 140/200)', 'SAND-F2601', '2028-12-31', 'S-01-02', 800.0, 150.0, 10, 'KG', 18.0]
+        ];
+        for (const s of seeds) {
+          await this.pgPool.query(
+            `INSERT INTO materials (code, name, category, spec, batch_no, expire_date, location, stock_quantity, safety_stock, lead_time, unit, daily_demand)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (code) DO NOTHING`,
+            s
+          );
+        }
+      }
+
+      // 若 daily_oil_consumptions 為空，植入預設 14 筆實績
+      const oilRes = await this.pgPool.query('SELECT COUNT(*)::int AS count FROM daily_oil_consumptions');
+      if ((oilRes.rows[0]?.count || 0) === 0) {
+        const oils = [
+          ['B-1823', '011', '2026-05-19', '2026-05-21', 1354.752, 162.5696],
+          ['P-1213', '001', '2026-05-19', '2026-05-21', 652.3082, 97.8458],
+          ['P-1213', '002', '2026-05-19', '2026-05-21', 895.7952, 134.3694],
+          ['T-1206', '011', '2026-05-19', '2026-05-21', 1804.032, 270.6048],
+          ['T-1206', '013', '2026-05-19', '2026-05-21', 822.528, 123.3792],
+          ['T2227', '001', '2026-05-19', '2026-05-21', 102.021, 8.1618],
+          ['T-2227', '001', '2026-05-19', '2026-05-21', 1270.8301, 101.6669],
+          ['T-2227', '002', '2026-05-19', '2026-05-21', 1122.5088, 89.8002],
+          ['T-2227', '003', '2026-05-19', '2026-05-21', 420.6188, 33.649],
+          ['T-2227', '012', '2026-05-20', '2026-05-21', 850.176, 68.0143],
+          ['T-2227', '013', '2026-05-19', '2026-05-21', 172.8, 15.2064],
+          ['T-2227', '014', '2026-05-19', '2026-05-21', 538.6752, 43.0934],
+          ['T2227+YT5355', '004', '2026-05-19', '2026-05-21', 403.5135, 48.4211],
+          ['XF-5010+T-2124', '013', '2026-05-19', '2026-05-21', 354.24, 42.509]
+        ];
+        for (const o of oils) {
+          await this.pgPool.query(
+            `INSERT INTO daily_oil_consumptions (oil_type, machine_no, start_date, end_date, emulsion_consumption, neat_oil_consumption) VALUES ($1,$2,$3,$4,$5,$6)`,
+            o
+          );
+        }
+      }
+    } catch (err) {
+      console.error('❌ 雲端 PostgreSQL 連線失敗:', err.message);
+      this.connected = false;
     }
   }
 
@@ -638,6 +808,15 @@ class Database {
         } catch (_) {
           materialsCount = 8;
         }
+      } else if (this.type === 'postgres' && this.pgPool) {
+        const oilRes = await this.pgPool.query('SELECT COUNT(*)::int AS count FROM daily_oil_consumptions');
+        oilRecordsCount = oilRes.rows[0]?.count || 0;
+
+        const sandRes = await this.pgPool.query('SELECT COUNT(*)::int AS count FROM sand_change_records');
+        sandRecordsCount = sandRes.rows[0]?.count || 0;
+
+        const matRes = await this.pgPool.query('SELECT COUNT(*)::int AS count FROM materials');
+        materialsCount = matRes.rows[0]?.count || 0;
       } else {
         const oilRes = await this.get('SELECT COUNT(*) as count FROM daily_oil_consumptions');
         oilRecordsCount = oilRes?.count || 0;
@@ -655,9 +834,15 @@ class Database {
         success: true,
         connected: this.connected,
         type: this.type,
-        server: this.type === 'mssql' ? `${process.env.DB_SERVER}\\${process.env.DB_INSTANCE}` : 'Local SQLite',
-        databaseName: this.type === 'mssql' ? (process.env.DB_NAME || 'BarmagSqlQC') : 'database.sqlite',
-        oilSource: this.type === 'mssql' ? 'dbo.ConsumptionSummary_Table (主管 MS SQL)' : 'daily_oil_consumptions (SQLite備援)',
+        server: this.type === 'mssql'
+          ? `${process.env.DB_SERVER}\\${process.env.DB_INSTANCE}`
+          : (this.type === 'postgres' ? 'Cloud PostgreSQL (SSL/TLS)' : 'Local SQLite'),
+        databaseName: this.type === 'mssql'
+          ? (process.env.DB_NAME || 'BarmagSqlQC')
+          : (this.type === 'postgres' ? 'Cloud Sync DB' : 'database.sqlite'),
+        oilSource: this.type === 'mssql'
+          ? 'dbo.ConsumptionSummary_Table (主管 MS SQL)'
+          : (this.type === 'postgres' ? 'daily_oil_consumptions (雲端 SSL 同步)' : 'daily_oil_consumptions (SQLite備援)'),
         oilRecordsCount,
         sandRecordsCount,
         materialsCount,
@@ -738,6 +923,11 @@ class Database {
       });
       const result = await request.query(mssqlQuery);
       return result.recordset || [];
+    } else if (this.type === 'postgres' && this.pgPool) {
+      let pgIdx = 0;
+      const pgQuery = sqlStr.replace(/\?/g, () => `$${++pgIdx}`);
+      const result = await this.pgPool.query(pgQuery, params);
+      return result.rows || [];
     } else if (this.db) {
       return new Promise((resolve, reject) => {
         this.db.all(sqlStr, params, (err, rows) => {
@@ -774,6 +964,11 @@ class Database {
       });
       const result = await request.query(mssqlQuery);
       return { id: result.rowsAffected[0], changes: result.rowsAffected[0] };
+    } else if (this.type === 'postgres' && this.pgPool) {
+      let pgIdx = 0;
+      const pgQuery = sqlStr.replace(/\?/g, () => `$${++pgIdx}`);
+      const result = await this.pgPool.query(pgQuery, params);
+      return { id: result.rows?.[0]?.id || 0, changes: result.rowCount || 0 };
     } else if (this.db) {
       return new Promise((resolve, reject) => {
         this.db.run(sqlStr, params, function (err) {

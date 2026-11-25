@@ -237,6 +237,28 @@ router.get('/5years', async (req, res) => {
       }
     }
 
+    // 1.5 若為雲端 PostgreSQL 模式 (Render + Neon/Supabase)，讀取已同步的月產能彙總表
+    if (!isLiveDb && db.connected && db.type === 'postgres' && db.pgPool) {
+      try {
+        const pgRes = await db.pgPool.query(`
+          SELECT month, doff_count AS "DoffCount", weight_ton AS "WeightTon", weight_kg AS "WeightKg"
+          FROM monthly_production_summary
+          ORDER BY month ASC
+        `);
+        if (pgRes.rows && pgRes.rows.length >= 12) {
+          monthlyRecords = pgRes.rows.map(r => ({
+            month: r.month,
+            weightTon: parseFloat(r.WeightTon),
+            weightKg: parseFloat(r.WeightKg),
+            doffCount: parseInt(r.DoffCount, 10)
+          }));
+          isLiveDb = true;
+        }
+      } catch (pgErr) {
+        console.warn('查詢雲端 monthly_production_summary 失敗:', pgErr.message);
+      }
+    }
+
     // 2. 若無直連，使用基準 60 個月數據 (擬真 191 萬筆真實落筒歷史)
     if (!isLiveDb) {
       monthlyRecords = mockMonthlyData.map(d => ({
@@ -255,7 +277,7 @@ router.get('/5years', async (req, res) => {
 
     res.json({
       success: true,
-      dataSource: isLiveDb ? 'MS SQL Server [dbo.V_DoffList_5Years] (即時直連 191 萬筆)' : '5年工廠歷史大數據基準鏡像 (191 萬筆)',
+      dataSource: isLiveDb ? (db.type === 'postgres' ? 'Cloud PostgreSQL [SSL 加密雲端資料庫]' : 'MS SQL Server [dbo.V_DoffList_5Years] (即時直連 191 萬筆)') : '5年工廠歷史大數據基準鏡像 (191 萬筆)',
       isLiveDb,
       summary: {
         totalDoffCount: totalDoff,

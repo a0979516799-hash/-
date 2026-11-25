@@ -32,7 +32,7 @@ const configureCors = () => {
   return cors({
     origin: (origin, callback) => {
       // 允許本機同源 (無 origin) 或在允許清單內的請求 (支援 IDE Live Preview 任意 port)
-      if (!origin || origin === 'null' || origin.startsWith('file://') || origin === allowedOrigin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      if (!origin || origin === 'null' || origin.startsWith('file://') || origin === allowedOrigin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:') || origin.endsWith('.netlify.app')) {
         callback(null, true);
       } else {
         callback(new Error('CORS 政策拒絕：未授權的外部網域請求'));

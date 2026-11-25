@@ -1878,13 +1878,52 @@ const offlineChangePackData = {
   }
 };
 
-// 動態決定 API 請求路徑 (若在 IDE 預覽伺服器如 port 52032，自動轉發至後端 port 3000)
-function apiUrl(path) {
-  if (typeof window !== 'undefined' && window.location.port !== '3000') {
-    const host = window.location.hostname || 'localhost';
-    return `http://${host}:3000${path.startsWith('/') ? path : '/' + path}`;
+// 雲端後端 HTTPS API 位址 (部署 Render 後可填入此處，或在網頁彈窗內直接輸入儲存)
+const DEFAULT_CLOUD_API_URL = '';
+
+function getCloudApiBase() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const qApi = params.get('api');
+    if (qApi && qApi.startsWith('http')) {
+      localStorage.setItem('barmag_cloud_api_url', qApi.replace(/\/+$/, ''));
+      return qApi.replace(/\/+$/, '');
+    }
+    return (localStorage.getItem('barmag_cloud_api_url') || DEFAULT_CLOUD_API_URL).replace(/\/+$/, '');
+  } catch (_) {
+    return DEFAULT_CLOUD_API_URL;
   }
-  return path;
+}
+
+// 動態決定 API 請求路徑 (支援本機 localhost:3000、file://、以及 Netlify HTTPS 連線雲端後端)
+function apiUrl(path) {
+  const cleanPath = path.startsWith('/') ? path : '/' + path;
+  if (typeof window !== 'undefined') {
+    const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
+    if (!isLocalHost) {
+      const cloudBase = getCloudApiBase();
+      if (cloudBase) return `${cloudBase}${cleanPath}`;
+      return cleanPath;
+    }
+    if (window.location.port !== '3000') {
+      const host = window.location.hostname || 'localhost';
+      return `http://${host}:3000${cleanPath}`;
+    }
+  }
+  return cleanPath;
+}
+
+function saveCloudApiUrl() {
+  const input = document.getElementById('modal-cloud-api-input');
+  if (!input) return;
+  const val = input.value.trim().replace(/\/+$/, '');
+  if (val && !val.startsWith('http')) {
+    showToast('請輸入完整的 https:// 雲端後端網址', 'warning');
+    return;
+  }
+  localStorage.setItem('barmag_cloud_api_url', val);
+  showToast(val ? '☁️ 已儲存雲端後端網址，正在連線測試...' : '已清除雲端後端網址', 'info');
+  connectDatabaseNow();
 }
 
 let currentLoadedChangePackDate = null;
@@ -2777,13 +2816,14 @@ async function checkDatabaseStatus(isManual = false) {
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.connected) {
+        const isPrimaryCloudOrSql = json.type === 'mssql' || json.type === 'postgres';
         if (dot) {
-          dot.className = json.type === 'mssql' ? 'db-dot online' : 'db-dot fallback';
+          dot.className = isPrimaryCloudOrSql ? 'db-dot online' : 'db-dot fallback';
         }
         if (label) {
-          label.textContent = json.type === 'mssql' 
-            ? `🗄️ MS SQL (${json.databaseName})` 
-            : `🗄️ SQLite (${json.sandRecordsCount.toLocaleString()} 筆鐵砂)`;
+          if (json.type === 'mssql') label.textContent = `🗄️ MS SQL (${json.databaseName})`;
+          else if (json.type === 'postgres') label.textContent = `☁️ 雲端資料庫 (SSL 已連線)`;
+          else label.textContent = `🗄️ SQLite (${json.sandRecordsCount.toLocaleString()} 筆鐵砂)`;
         }
 
         // 更新診斷彈窗數據
@@ -2794,7 +2834,7 @@ async function checkDatabaseStatus(isManual = false) {
         const oilCountEl = document.getElementById('modal-oil-count');
         const sandCountEl = document.getElementById('modal-sand-count');
 
-        if (engineEl) engineEl.textContent = json.type === 'mssql' ? 'Microsoft SQL Server (生產模式)' : 'SQLite (本地備援模式)';
+        if (engineEl) engineEl.textContent = json.type === 'mssql' ? 'Microsoft SQL Server (生產模式)' : (json.type === 'postgres' ? 'Cloud PostgreSQL (SSL 雲端同步模式)' : 'SQLite (本地備援模式)');
         if (serverEl) serverEl.textContent = json.server;
         if (nameEl) nameEl.textContent = json.databaseName;
         if (latencyEl) latencyEl.textContent = `${json.latencyMs} ms`;
@@ -2803,7 +2843,7 @@ async function checkDatabaseStatus(isManual = false) {
 
         const pillConnectBtn = document.getElementById('db-pill-connect-btn');
         if (pillConnectBtn) {
-          pillConnectBtn.style.display = json.type === 'mssql' ? 'none' : 'inline-flex';
+          pillConnectBtn.style.display = (json.type === 'mssql' || json.type === 'postgres') ? 'none' : 'inline-flex';
           pillConnectBtn.textContent = '🔌 切回 MS SQL';
         }
 
