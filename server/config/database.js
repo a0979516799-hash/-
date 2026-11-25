@@ -756,6 +756,14 @@ class Database {
    * 主動重新連線 MS SQL Server (供前端「一鍵連線資料庫」按鈕呼叫)
    */
   async reconnectMssql() {
+    if (process.env.DB_TYPE === 'postgres' || (process.env.DATABASE_URL && process.env.DB_TYPE !== 'mssql')) {
+      await this.initPostgres();
+      const status = await this.getStatus();
+      return {
+        reconnected: this.connected,
+        ...status
+      };
+    }
     const sql = require('mssql');
     try {
       if (this.pool) {

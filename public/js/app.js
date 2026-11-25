@@ -2857,6 +2857,16 @@ async function checkDatabaseStatus(isManual = false) {
     console.warn('資料庫狀態檢測異常，切換為離線展示模式:', err.message);
   }
 
+  // 若在 Netlify 線上環境且 Render 正在休眠喚醒中，自動於 6 秒後重試一次
+  const isCloudPage = typeof window !== 'undefined' && window.location.protocol === 'https:' && getCloudApiBase();
+  if (isCloudPage && !window._cloudWakeRetried) {
+    window._cloudWakeRetried = true;
+    if (dot) dot.className = 'db-dot fallback';
+    if (label) label.textContent = '⏳ 雲端伺服器喚醒中...';
+    setTimeout(() => { checkDatabaseStatus(false); }, 6000);
+    return null;
+  }
+
   // 離線模式
   if (dot) dot.className = 'db-dot offline';
   if (label) label.textContent = '⚪ 離線靜態展示';
@@ -2914,11 +2924,12 @@ async function connectDatabaseNow(event) {
     const res = await fetch(apiUrl('/api/db/reconnect'), { method: 'POST' });
     if (res.ok) {
       const json = await res.json();
-      if (json.connected && json.type === 'mssql') {
+      if (json.connected && (json.type === 'mssql' || json.type === 'postgres')) {
         await reloadAllLiveData();
         setLoading(false);
-        showHint(`🟢 已成功連線至 <strong>MS SQL Server (${json.databaseName})</strong>！延遲 ${json.latencyMs || 0} ms，數據已同步更新。`, 'var(--success)');
-        showToast(`🟢 已成功連線至 MS SQL (${json.databaseName})！`, 'success');
+        const engineLabel = json.type === 'postgres' ? 'Cloud PostgreSQL (SSL 雲端同步資料庫)' : `MS SQL Server (${json.databaseName})`;
+        showHint(`🟢 已成功連線至 <strong>${engineLabel}</strong>！延遲 ${json.latencyMs || 0} ms，數據已同步更新。`, 'var(--success)');
+        showToast(`🟢 已成功連線至 ${engineLabel}！`, 'success');
         return;
       } else {
         await checkDatabaseStatus(false);
@@ -3124,6 +3135,8 @@ async function syncMaterialRestockToDatabase(code, amount, batchNo = 'AUTO-RESTO
 function openDbStatusModal() {
   const modal = document.getElementById('db-status-modal');
   if (modal) {
+    const cloudInput = document.getElementById('modal-cloud-api-input');
+    if (cloudInput) cloudInput.value = getCloudApiBase() || '';
     modal.classList.add('active');
     checkDatabaseStatus();
   }
