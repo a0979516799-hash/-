@@ -238,14 +238,15 @@ body {
 
 /* 主容器 */
 .container {
-  max-width: 1280px;
+  max-width: 1780px;
+  width: 96%;
   margin: 0 auto;
-  padding: 2rem 1.5rem;
+  padding: 1rem 1.25rem;
 }
 
 /* 頂部快速看板與統計指標 */
 .dashboard-header {
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
@@ -964,7 +965,8 @@ body {
 
 .trend-chart-container canvas,
 canvas#trendCanvas,
-canvas#sandTrendCanvas {
+canvas#sandTrendCanvas,
+canvas#forecastCanvas {
   width: 100% !important;
   height: 100% !important;
   display: block;
@@ -1131,18 +1133,23 @@ canvas#sandTrendCanvas {
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: 700;
-  font-family: monospace;
-  width: 65px;
-  text-align: right;
+  padding: 0.4rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, monospace;
+  box-sizing: border-box;
+  transition: all 0.2s ease;
 }
 
 .recipe-input:focus {
   border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.2);
   outline: none;
+}
+
+.recipe-table tr:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* 響應式雙欄圖表與導覽列微調 */

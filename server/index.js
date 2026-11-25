@@ -18,6 +18,7 @@ const transactionsRoutes = require('./routes/transactions');
 const consumptionRoutes = require('./routes/consumption');
 const sandRoutes = require('./routes/sand');
 const dataRoutes = require('./routes/data');
+const forecastRoutes = require('./routes/forecast');
 const db = require('./config/database');
 
 const app = express();
@@ -44,6 +45,7 @@ app.use('/api/materials', materialsRoutes);
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/consumption', consumptionRoutes);
 app.use('/api/sand', sandRoutes);
+app.use('/api/forecast', forecastRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api', dataRoutes); // 支援 /api/demo/*
 
@@ -71,6 +73,16 @@ app.get('/api/db/status', async (req, res) => {
     res.json(status);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7.2 主動一鍵重新連線資料庫端點
+app.post('/api/db/reconnect', async (req, res) => {
+  try {
+    const result = await db.reconnectMssql();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, connected: false, error: err.message });
   }
 });
 

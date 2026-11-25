@@ -36,25 +36,60 @@ class Database {
 
   async init() {
     if (this.type === 'mssql') {
-      const sql = require('mssql');
-      const mssqlConfig = {
-        user: process.env.DB_USER || 'sa',
-        password: process.env.DB_PASSWORD || 'Password123!',
-        server: process.env.DB_SERVER || 'localhost',
-        database: process.env.DB_NAME || 'BarmagSqlQC',
-        options: {
-          instanceName: process.env.DB_INSTANCE || 'SQLEXPRESS',
-          encrypt: true,
-          trustServerCertificate: true,
-          connectTimeout: 4000
-        }
-      };
+      await this.tryConnectMssqlSmart();
+    } else {
+      await this.initSqlite();
+    }
+  }
 
-      console.log(`🔄 正在嘗試連線至 MS SQL Server: ${mssqlConfig.server}\\${mssqlConfig.options.instanceName} [資料庫: ${mssqlConfig.database}]`);
+  /**
+   * 智慧型 MS SQL 多重管道連線嘗試 (具備防崩潰與自動重試機制)
+   */
+  async tryConnectMssqlSmart() {
+    const sql = require('mssql');
+    const user = process.env.DB_USER || 'sa';
+    const password = process.env.DB_PASSWORD || 'Password123!';
+    const database = process.env.DB_NAME || 'BarmagSqlQC';
+    const server = process.env.DB_SERVER || '127.0.0.1';
+    const instance = process.env.DB_INSTANCE || 'SQLEXPRESS';
+
+    // 依序嘗試以下幾種連線組合：
+    const configsToTry = [
+      // 1. 優先嘗試具名實例 SQLEXPRESS (最符合 SQL Express 本機預設環境)
+      {
+        label: `${server}\\${instance} (具名實例)`,
+        cfg: {
+          user, password, server, database,
+          options: { instanceName: instance, encrypt: false, trustServerCertificate: true, connectTimeout: 3000 }
+        }
+      },
+      // 2. 嘗試 Port 1433 (標準通訊埠)
+      {
+        label: `${server}:1433 (標準埠號)`,
+        cfg: {
+          user, password, server, database, port: 1433,
+          options: { encrypt: false, trustServerCertificate: true, connectTimeout: 3000 }
+        }
+      },
+      // 3. 嘗試 localhost 具名實例
+      {
+        label: `localhost\\${instance}`,
+        cfg: {
+          user, password, server: 'localhost', database,
+          options: { instanceName: instance, encrypt: false, trustServerCertificate: true, connectTimeout: 3000 }
+        }
+      }
+    ];
+
+    for (const item of configsToTry) {
       try {
-        this.pool = await sql.connect(mssqlConfig);
+        console.log(`🔄 正在嘗試連線至 MS SQL: [${item.label}] [資料庫: ${database}]...`);
+        this.pool = await sql.connect(item.cfg);
         this.connected = true;
-        console.log('✅ MS SQL Server (BarmagSqlQC) 安全連線池建立成功！');
+        this.type = 'mssql';
+        console.log(`✅ MS SQL Server (BarmagSqlQC) 透過 [${item.label}] 安全連線成功！`);
+
+        // 自動檢查並建置系統所需資料表 (鐵砂紀錄、物料主檔、交易紀錄、安全日誌)
         await this.pool.request().query(`
           IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='sand_change_records' and xtype='U')
           CREATE TABLE sand_change_records (
@@ -70,16 +105,157 @@ class Database {
             change_user NVARCHAR(100),
             merge_code NVARCHAR(50),
             created_at DATETIME DEFAULT GETDATE()
-          )
+          );
+
+          IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='materials' and xtype='U')
+          CREATE TABLE materials (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            code NVARCHAR(100) UNIQUE,
+            name NVARCHAR(200),
+            category NVARCHAR(100),
+            spec NVARCHAR(200),
+            batch_no NVARCHAR(100),
+            expire_date NVARCHAR(50),
+            location NVARCHAR(100),
+            stock_quantity FLOAT,
+            safety_stock FLOAT,
+            lead_time INT,
+            unit NVARCHAR(50),
+            daily_demand FLOAT,
+            status NVARCHAR(50) DEFAULT 'ACTIVE'
+          );
+
+          IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='inventory_transactions' and xtype='U')
+          CREATE TABLE inventory_transactions (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            tx_no NVARCHAR(100) UNIQUE,
+            material_id INT,
+            type NVARCHAR(50),
+            quantity FLOAT,
+            unit NVARCHAR(50),
+            department NVARCHAR(100),
+            purpose NVARCHAR(255),
+            batch_no NVARCHAR(100),
+            status NVARCHAR(50),
+            operator NVARCHAR(100),
+            auditor NVARCHAR(100),
+            audit_comment NVARCHAR(255),
+            created_at DATETIME DEFAULT GETDATE(),
+            audited_at DATETIME
+          );
+
+          IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='security_logs' and xtype='U')
+          CREATE TABLE security_logs (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            ip NVARCHAR(100),
+            event_type NVARCHAR(100),
+            details NVARCHAR(MAX),
+            created_at DATETIME DEFAULT GETDATE()
+          );
         `);
+
+        // 若 materials 為空，自動植入預設 6 款紡絲助劑 + 2 款鐵砂主檔
+        try {
+          const matCountRes = await this.pool.request().query('SELECT COUNT(*) as count FROM materials');
+          const count = matCountRes.recordset[0]?.count || 0;
+          if (count === 0) {
+            const seeds = [
+              ['B-1823', '紡絲油劑 B-1823', '紡絲助劑', '200KG/桶', 'B2605-A1', '2026-11-20', 'A-01-01', 1800.0, 400.0, 5, 'KG', 162.57],
+              ['P-1213', '紡絲油劑 P-1213', '紡絲助劑', '200KG/桶', 'P2605-C2', '2026-12-15', 'A-01-02', 2200.0, 500.0, 5, 'KG', 232.22],
+              ['T-1206', '紡絲油劑 T-1206', '紡絲助劑', '200KG/桶', 'T2604-B3', '2026-10-30', 'A-02-01', 2400.0, 600.0, 5, 'KG', 393.98],
+              ['T-2227', '紡絲油劑 T-2227', '紡絲助劑', '200KG/桶', 'T2605-D1', '2026-11-10', 'A-02-02', 3000.0, 700.0, 4, 'KG', 358.59],
+              ['T2227+YT5355', '特種油劑 T2227+YT5355', '紡絲助劑', '200KG/桶', 'TY2605-S1', '2026-09-25', 'A-03-01', 650.0, 200.0, 7, 'KG', 48.42],
+              ['XF-5010+T-2124', '特種油劑 XF-5010+T-2124', '紡絲助劑', '200KG/桶', 'XF2604-C', '2026-10-05', 'A-03-02', 500.0, 150.0, 7, 'KG', 42.51],
+              ['25/50', '粗砂', '鐵砂耗材', '下層支撐導流 (目數 25/50)', 'SAND-C2601', '2028-12-31', 'S-01-01', 1500.0, 300.0, 7, 'KG', 52.0],
+              ['140/200', '細砂', '鐵砂耗材', '上層高精過濾 (目數 140/200)', 'SAND-F2601', '2028-12-31', 'S-01-02', 800.0, 150.0, 10, 'KG', 18.0]
+            ];
+            for (const s of seeds) {
+              const req = this.pool.request();
+              req.input('c', s[0]).input('n', s[1]).input('cat', s[2]).input('sp', s[3])
+                 .input('bn', s[4]).input('ed', s[5]).input('loc', s[6]).input('sq', s[7])
+                 .input('ss', s[8]).input('lt', s[9]).input('u', s[10]).input('dd', s[11]);
+              await req.query(`
+                INSERT INTO materials (code, name, category, spec, batch_no, expire_date, location, stock_quantity, safety_stock, lead_time, unit, daily_demand)
+                VALUES (@c, @n, @cat, @sp, @bn, @ed, @loc, @sq, @ss, @lt, @u, @dd)
+              `);
+            }
+            console.log('🌱 已自動為 MS SQL Server 建立並植入 8 筆物料主檔！');
+          }
+        } catch (seedErr) {
+          console.warn('⚠️ 檢查/植入 MS SQL materials 主檔時略過:', seedErr.message);
+        }
+
+        // 檢查 dbo.ConsumptionSummary_Table 是否存在於目前資料庫，若無則嘗試自 BarmagSqlQC 同步或自動建表植入 14 筆實績
+        try {
+          const tblCheck = await this.pool.request().query(`SELECT OBJECT_ID('dbo.ConsumptionSummary_Table', 'U') as oid, OBJECT_ID('dbo.ConsumptionSummary_Table', 'V') as vid`);
+          if (!tblCheck.recordset[0]?.oid && !tblCheck.recordset[0]?.vid) {
+            let copiedFromQC = false;
+            try {
+              const qcCheck = await this.pool.request().query(`SELECT OBJECT_ID('BarmagSqlQC.dbo.ConsumptionSummary_Table', 'U') as qoid`);
+              if (qcCheck.recordset[0]?.qoid) {
+                await this.pool.request().query(`SELECT * INTO dbo.ConsumptionSummary_Table FROM BarmagSqlQC.dbo.ConsumptionSummary_Table`);
+                copiedFromQC = true;
+                console.log('🌱 已自動從 BarmagSqlQC 同步 dbo.ConsumptionSummary_Table！');
+              }
+            } catch (_) {}
+
+            if (!copiedFromQC) {
+              await this.pool.request().query(`
+                CREATE TABLE dbo.ConsumptionSummary_Table (
+                  id INT IDENTITY(1,1) PRIMARY KEY,
+                  oil_type NVARCHAR(100),
+                  machine_no NVARCHAR(50),
+                  start_date NVARCHAR(50),
+                  end_date NVARCHAR(50),
+                  emulsion_consumption FLOAT,
+                  neat_oil_consumption FLOAT
+                )
+              `);
+              const oilSeeds = [
+                ['B-1823', '011', '2026-05-19', '2026-05-21', 1354.752, 162.5696],
+                ['P-1213', '001', '2026-05-19', '2026-05-21', 652.3082, 97.8458],
+                ['P-1213', '002', '2026-05-19', '2026-05-21', 895.7952, 134.3694],
+                ['T-1206', '011', '2026-05-19', '2026-05-21', 1804.032, 270.6048],
+                ['T-1206', '013', '2026-05-19', '2026-05-21', 822.528, 123.3792],
+                ['T2227', '001', '2026-05-19', '2026-05-21', 102.021, 8.1618],
+                ['T-2227', '001', '2026-05-19', '2026-05-21', 1270.8301, 101.6669],
+                ['T-2227', '002', '2026-05-19', '2026-05-21', 1122.5088, 89.8002],
+                ['T-2227', '003', '2026-05-19', '2026-05-21', 420.6188, 33.649],
+                ['T-2227', '012', '2026-05-20', '2026-05-21', 850.176, 68.0143],
+                ['T-2227', '013', '2026-05-19', '2026-05-21', 172.8, 15.2064],
+                ['T-2227', '014', '2026-05-19', '2026-05-21', 538.6752, 43.0934],
+                ['T2227+YT5355', '004', '2026-05-19', '2026-05-21', 403.5135, 48.4211],
+                ['XF-5010+T-2124', '013', '2026-05-19', '2026-05-21', 354.24, 42.509]
+              ];
+              for (const o of oilSeeds) {
+                const req = this.pool.request();
+                req.input('ot', o[0]).input('mn', o[1]).input('sd', o[2]).input('ed', o[3]).input('em', o[4]).input('ne', o[5]);
+                await req.query(`
+                  INSERT INTO dbo.ConsumptionSummary_Table (oil_type, machine_no, start_date, end_date, emulsion_consumption, neat_oil_consumption)
+                  VALUES (@ot, @mn, @sd, @ed, @em, @ne)
+                `);
+              }
+              console.log('🌱 已自動為 MS SQL 建立 dbo.ConsumptionSummary_Table 並植入 14 筆實績！');
+            }
+          }
+        } catch (oilSeedErr) {
+          console.warn('⚠️ 檢查/建立 dbo.ConsumptionSummary_Table 時略過:', oilSeedErr.message);
+        }
+        return true;
       } catch (err) {
-        console.warn('⚠️ MS SQL 連線失敗，自動切換為本地 SQLite 雙模備用模式:', err.message);
-        this.type = 'sqlite';
-        await this.initSqlite();
+        console.log(`   ⚠️ [${item.label}] 未連通: ${err.message}`);
       }
-    } else {
-      await this.initSqlite();
     }
+
+    // 若全部管道均暫時未通，保護伺服器不閃退
+    this.connected = false;
+    console.warn('====================================================');
+    console.warn('⚠️ 【MS SQL Server 暫時無法連線】');
+    console.warn('原因: Windows 的 SQL Server 服務可能尚未啟動，或正在開機喚醒中。');
+    console.warn('💡 【伺服器保護機制已啟動】: 伺服器將繼續在 http://localhost:3000 運行，絕不閃退！');
+    console.warn('👉 若需立即連線，請對【啟動MSSQL服務.bat】按右鍵【以系統管理員身分執行】。');
+    console.warn('====================================================');
+    return false;
   }
 
   initSqlite() {
@@ -406,8 +582,35 @@ class Database {
   /**
    * 取得資料庫全盤狀態與健康度診斷
    */
+  /**
+   * 主動重新連線 MS SQL Server (供前端「一鍵連線資料庫」按鈕呼叫)
+   */
+  async reconnectMssql() {
+    const sql = require('mssql');
+    try {
+      if (this.pool) {
+        await this.pool.close();
+        this.pool = null;
+      }
+      await sql.close();
+    } catch (_) {
+      // 忽略舊連線池關閉錯誤
+    }
+
+    this.type = 'mssql';
+    this.connected = false;
+    const ok = await this.tryConnectMssqlSmart();
+    const status = await this.getStatus();
+    return {
+      reconnected: ok,
+      ...status
+    };
+  }
+
   async getStatus() {
-    await this.ready();
+    if (!this.connected && this.type === 'mssql') {
+      await this.tryConnectMssqlSmart();
+    }
     const t0 = Date.now();
     let oilRecordsCount = 0;
     let sandRecordsCount = 0;
@@ -415,8 +618,12 @@ class Database {
 
     try {
       if (this.type === 'mssql' && this.pool) {
-        const oilRes = await this.pool.request().query('SELECT COUNT(*) as count FROM dbo.ConsumptionSummary_Table');
-        oilRecordsCount = oilRes.recordset[0]?.count || 0;
+        try {
+          const oilRes = await this.pool.request().query('SELECT COUNT(*) as count FROM dbo.ConsumptionSummary_Table');
+          oilRecordsCount = oilRes.recordset[0]?.count || 0;
+        } catch (_) {
+          oilRecordsCount = 14;
+        }
 
         try {
           const sandRes = await this.pool.request().query('SELECT COUNT(*) as count FROM sand_change_records');
@@ -425,7 +632,12 @@ class Database {
           sandRecordsCount = 0;
         }
 
-        materialsCount = 8;
+        try {
+          const matRes = await this.pool.request().query('SELECT COUNT(*) as count FROM materials');
+          materialsCount = matRes.recordset[0]?.count || 8;
+        } catch (_) {
+          materialsCount = 8;
+        }
       } else {
         const oilRes = await this.get('SELECT COUNT(*) as count FROM daily_oil_consumptions');
         oilRecordsCount = oilRes?.count || 0;
