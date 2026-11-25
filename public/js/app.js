@@ -1879,7 +1879,7 @@ const offlineChangePackData = {
 };
 
 // 雲端後端 HTTPS API 位址 (部署 Render 後可填入此處，或在網頁彈窗內直接輸入儲存)
-const DEFAULT_CLOUD_API_URL = '';
+const DEFAULT_CLOUD_API_URL = 'https://barmag-inventory-api.onrender.com';
 
 function getCloudApiBase() {
   try {
